@@ -33,9 +33,15 @@ const LOADABLE_TABLE_WIDTH = 96;
 
 let db: Kysely<Database>;
 let seoRepo: SeoRepository;
+let queryCount = 0;
 
 beforeAll(async () => {
-	db = new Kysely<Database>({ dialect: new RawBindingD1Dialect({ database: env.DB }) });
+	db = new Kysely<Database>({
+		dialect: new RawBindingD1Dialect({ database: env.DB }),
+		log(event) {
+			if (event.level === "query") queryCount++;
+		},
+	});
 	await resetD1Schema(db);
 	await runMigrations(db);
 
@@ -50,7 +56,7 @@ beforeAll(async () => {
 		await registry.createField(COLLECTION, {
 			slug: `field_${i}`,
 			label: `Field ${i}`,
-			type: "string",
+			type: i === USER_FIELD_COUNT ? "boolean" : "string",
 		});
 	}
 	await db
@@ -66,16 +72,23 @@ afterAll(async () => {
 	await db.destroy();
 });
 
-function load(idOrSlug: string) {
+async function load(idOrSlug: string, locale?: string) {
 	const loader = emdashLoader();
-	return runWithContext({ db, editMode: false }, () =>
-		loader.loadEntry!({ filter: { type: COLLECTION, id: idOrSlug } }),
+	const loaded = await runWithContext({ db, editMode: false }, () =>
+		loader.loadEntry!({ filter: { type: COLLECTION, id: idOrSlug, locale } }),
 	);
+	if (loaded && "error" in loaded) throw loaded.error;
+	return loaded;
 }
 
-async function createEntry(title: string): Promise<{ id: string; slug: string }> {
-	const data: Record<string, string> = { title };
-	for (let i = 1; i <= USER_FIELD_COUNT; i++) data[`field_${i}`] = `value-${i}`;
+async function createEntry(
+	title: string,
+	booleanValue: boolean | null = false,
+): Promise<{ id: string; slug: string }> {
+	const data: Record<string, string | boolean | null> = { title };
+	for (let i = 1; i <= USER_FIELD_COUNT; i++) {
+		data[`field_${i}`] = i === USER_FIELD_COUNT ? booleanValue : `value-${i}`;
+	}
 	const result = await handleContentCreate(db, COLLECTION, { data, status: "published" });
 	if (!result.success) throw new Error(`Failed to create entry: ${JSON.stringify(result)}`);
 	const item = result.data!.item;
@@ -101,15 +114,22 @@ describe("loader on a wide collection on D1", () => {
 		).rejects.toThrow(/too many columns in result set/);
 	});
 
-	it("loads an entry at the loadable width", async () => {
-		const { slug } = await createEntry("Wide Entry");
+	it.each([
+		[true, undefined],
+		[false, "en"],
+		[null, "en"],
+	] as const)("loads boolean %s at the loadable width in locale %s", async (value, locale) => {
+		const { slug } = await createEntry("Wide Entry", value);
+		queryCount = 0;
 
-		const loaded = await load(slug);
+		const loaded = await load(slug, locale);
 
+		expect(queryCount).toBe(1);
 		const data = (loaded as { data: Record<string, unknown> }).data;
 		expect(data.title).toBe("Wide Entry");
 		expect(data.field_1).toBe("value-1");
-		expect(data.field_80).toBe("value-80");
+		expect(data.field_79).toBe("value-79");
+		expect(data.field_80).toBe(value);
 	});
 
 	it("still attaches data.seo at the loadable width", async () => {
@@ -127,6 +147,7 @@ describe("loader on a wide collection on D1", () => {
 		expect(seo.noIndex).toBe(true);
 		expect(seo.canonical).toBe("https://example.com/wide");
 		expect(seo.title).toBe("Wide SEO Title");
+		expect((loaded as { data: Record<string, unknown> }).data.field_80).toBe(false);
 	});
 
 	it("omits data.seo at the loadable width when no SEO row exists", async () => {
