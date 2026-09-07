@@ -2912,13 +2912,21 @@ export class EmDashRuntime {
 			locale?: string;
 			translationOf?: string;
 			taxonomies?: Record<string, string[]>;
+			actor?: { id: string; role: number } | null;
 		},
 	) {
+		const actor = body.actor ?? null;
+
 		// Run beforeSave hooks (trusted plugins)
 		let processedData = body.data;
 		if (this.hooks.hasHooks("content:beforeSave")) {
 			try {
-				const hookResult = await this.hooks.runContentBeforeSave(body.data, collection, true);
+				const hookResult = await this.hooks.runContentBeforeSave(
+					body.data,
+					collection,
+					true,
+					actor,
+				);
 				processedData = hookResult.content;
 			} catch (error) {
 				return beforeSaveFailure(error);
@@ -2960,7 +2968,7 @@ export class EmDashRuntime {
 
 		// Run afterSave hooks (fire-and-forget)
 		if (result.success && result.data) {
-			this.runAfterSaveHooks(contentItemToRecord(result.data.item), collection, true);
+			this.runAfterSaveHooks(contentItemToRecord(result.data.item), collection, true, actor);
 		}
 
 		return result;
@@ -2974,6 +2982,7 @@ export class EmDashRuntime {
 			slug?: string | null;
 			status?: string;
 			authorId?: string | null;
+			revisionAuthorId?: string | null;
 			bylines?: Array<{ bylineId: string; roleLabel?: string | null }>;
 			seo?: {
 				title?: string | null;
@@ -2988,6 +2997,7 @@ export class EmDashRuntime {
 			/** Replace the previous autosave revision after staging this save. */
 			skipRevision?: boolean;
 			_rev?: string;
+			actor?: { id: string; role: number } | null;
 		},
 	) {
 		// Resolve slug → ID if needed (before any lookups)
@@ -3014,6 +3024,8 @@ export class EmDashRuntime {
 			}
 		}
 		const { _rev: _discardedRev, ...bodyWithoutRev } = body;
+		const actor = body.actor ?? null;
+		const revisionAuthorId = bodyWithoutRev.revisionAuthorId ?? actor?.id;
 
 		// Run beforeSave hooks if data is provided
 		let processedData = bodyWithoutRev.data;
@@ -3024,6 +3036,7 @@ export class EmDashRuntime {
 						bodyWithoutRev.data,
 						collection,
 						false,
+						actor,
 					);
 					processedData = hookResult.content;
 				} catch (error) {
@@ -3032,7 +3045,12 @@ export class EmDashRuntime {
 			}
 
 			// Run sandboxed beforeSave hooks
-			const sandboxResult = await this.runSandboxedBeforeSave(processedData!, collection, false);
+			const sandboxResult = await this.runSandboxedBeforeSave(
+				processedData!,
+				collection,
+				false,
+				actor,
+			);
 			if (!sandboxResult.success) return sandboxResult;
 			processedData = sandboxResult.data;
 
@@ -3083,7 +3101,7 @@ export class EmDashRuntime {
 						collection,
 						entryId: resolvedId,
 						data: mergedData,
-						authorId: bodyWithoutRev.authorId ?? undefined,
+						authorId: revisionAuthorId,
 					});
 
 					let staged: boolean;
@@ -3221,7 +3239,7 @@ export class EmDashRuntime {
 
 		// Run afterSave hooks (fire-and-forget)
 		if (hydrated.success && hydrated.data) {
-			this.runAfterSaveHooks(contentItemToRecord(hydrated.data.item), collection, false);
+			this.runAfterSaveHooks(contentItemToRecord(hydrated.data.item), collection, false, actor);
 		}
 
 		if (hydrated.success) {
@@ -4091,6 +4109,7 @@ export class EmDashRuntime {
 		content: Record<string, unknown>,
 		collection: string,
 		isNew: boolean,
+		actor?: { id: string; role: number } | null,
 	) {
 		let result = content;
 
@@ -4103,6 +4122,7 @@ export class EmDashRuntime {
 					content: result,
 					collection,
 					isNew,
+					actor,
 				});
 				const inspection = inspectSandboxHookResult(hookResult);
 				if (inspection.kind === "error") {
@@ -4173,12 +4193,13 @@ export class EmDashRuntime {
 		content: Record<string, unknown>,
 		collection: string,
 		isNew: boolean,
+		actor?: { id: string; role: number } | null,
 	): void {
 		after(async () => {
 			// Trusted plugins
 			if (this.hooks.hasHooks("content:afterSave")) {
 				try {
-					await this.hooks.runContentAfterSave(content, collection, isNew);
+					await this.hooks.runContentAfterSave(content, collection, isNew, actor);
 				} catch (err) {
 					console.error("EmDash afterSave hook error:", err);
 				}
@@ -4193,7 +4214,12 @@ export class EmDashRuntime {
 				tasks.push(
 					(async () => {
 						try {
-							await plugin.invokeHook("content:afterSave", { content, collection, isNew });
+							await plugin.invokeHook("content:afterSave", {
+								content,
+								collection,
+								isNew,
+								actor,
+							});
 						} catch (err) {
 							console.error(`EmDash: Sandboxed plugin ${id} afterSave error:`, err);
 						}

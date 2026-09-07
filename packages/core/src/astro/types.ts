@@ -298,6 +298,7 @@ export interface EmDashHandlers {
 			taxonomies?: Record<string, string[]>;
 			createdAt?: string | null;
 			publishedAt?: string | null;
+			actor?: { id: string; role: number } | null;
 		},
 	) => Promise<HandlerResponse>;
 
@@ -309,6 +310,7 @@ export interface EmDashHandlers {
 			slug?: string | null;
 			status?: string;
 			authorId?: string | null;
+			revisionAuthorId?: string | null;
 			bylines?: Array<{ bylineId: string; roleLabel?: string | null }>;
 			locale?: string;
 			seo?: {
@@ -321,6 +323,7 @@ export interface EmDashHandlers {
 			taxonomies?: Record<string, string[]>;
 			publishedAt?: string | null;
 			_rev?: string;
+			actor?: { id: string; role: number } | null;
 		},
 	) => Promise<HandlerResponse>;
 

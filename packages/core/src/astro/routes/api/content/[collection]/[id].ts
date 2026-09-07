@@ -122,6 +122,7 @@ export const PUT: APIRoute = async ({ params, request, locals, cache }) => {
 		...updateBody,
 		locale,
 		_rev: body._rev,
+		actor: user ? { id: user.id, role: user.role } : null,
 	});
 
 	if (!result.success) return unwrapResult(result);

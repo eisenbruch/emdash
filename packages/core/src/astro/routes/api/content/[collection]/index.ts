@@ -85,6 +85,7 @@ export const POST: APIRoute = async ({ params, request, locals, cache }) => {
 		authorId: user?.id,
 		locale: body.locale,
 		translationOf: body.translationOf,
+		actor: user ? { id: user.id, role: user.role } : null,
 	});
 
 	if (!result.success) return unwrapResult(result);

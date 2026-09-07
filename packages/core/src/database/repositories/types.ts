@@ -35,6 +35,7 @@ export interface UpdateContentInput {
 	publishedAt?: string | null;
 	scheduledAt?: string | null;
 	authorId?: string | null;
+	revisionAuthorId?: string | null;
 	primaryBylineId?: string | null;
 }
 

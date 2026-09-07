@@ -999,6 +999,7 @@ export async function handleContentUpdate(
 		slug?: string | null;
 		status?: string;
 		authorId?: string | null;
+		revisionAuthorId?: string | null;
 		bylines?: ContentBylineInput[];
 		locale?: string;
 		_rev?: string;

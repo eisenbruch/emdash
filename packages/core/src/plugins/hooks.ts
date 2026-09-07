@@ -15,6 +15,7 @@ import type {
 	ResolvedPlugin,
 	ResolvedHook,
 	PluginContext,
+	ContentHookActor,
 	ContentHookEvent,
 	ContentDeleteEvent,
 	ContentStateChangeEvent,
@@ -493,6 +494,7 @@ export class HookPipeline {
 		content: Record<string, unknown>,
 		collection: string,
 		isNew: boolean,
+		actor?: ContentHookActor | null,
 	): Promise<{
 		content: Record<string, unknown>;
 		results: HookResult<Record<string, unknown>>[];
@@ -507,6 +509,7 @@ export class HookPipeline {
 				content: currentContent,
 				collection,
 				isNew,
+				actor,
 			};
 			const ctx = this.getContext(hook.pluginId);
 			const start = Date.now();
@@ -547,13 +550,14 @@ export class HookPipeline {
 		content: Record<string, unknown>,
 		collection: string,
 		isNew: boolean,
+		actor?: ContentHookActor | null,
 	): Promise<HookResult<void>[]> {
 		const hooks = this.getTypedHooks("content:afterSave");
 		const results: HookResult<void>[] = [];
 
 		for (const hook of hooks) {
 			const { handler } = hook;
-			const event: ContentHookEvent = { content, collection, isNew };
+			const event: ContentHookEvent = { content, collection, isNew, actor };
 			const ctx = this.getContext(hook.pluginId);
 			const start = Date.now();
 

@@ -805,12 +805,21 @@ export interface HookConfig<THandler> {
 }
 
 /**
+ * Actor attached to a content hook event.
+ */
+export interface ContentHookActor {
+	id: string;
+	role: number;
+}
+
+/**
  * Content hook event
  */
 export interface ContentHookEvent {
 	content: Record<string, unknown>;
 	collection: string;
 	isNew: boolean;
+	actor?: ContentHookActor | null;
 }
 
 /**
