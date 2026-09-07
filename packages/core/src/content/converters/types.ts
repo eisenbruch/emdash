@@ -79,6 +79,7 @@ export interface PortableTextImageBlock {
 	displayWidth?: number;
 	/** Display height for this instance (overrides original) */
 	displayHeight?: number;
+	alignment?: "left" | "center" | "right" | "wide" | "full";
 }
 
 /**
