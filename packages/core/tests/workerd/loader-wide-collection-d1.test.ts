@@ -22,8 +22,8 @@ declare module "cloudflare:test" {
  * The loader's entry read at the widest collection D1 can still return.
  *
  * D1 caps a result set at 100 columns. `loadEntry` selects `c.*` plus the
- * folded hydration columns, so 96 table columns is the widest collection that
- * still leaves them room under the cap.
+ * four folded result columns, so 96 table columns is the widest collection
+ * that still leaves them room under the cap.
  */
 const COLLECTION = "wide_d1";
 /** Takes `ec_wide_d1` to LOADABLE_TABLE_WIDTH alongside `title`. */
@@ -104,13 +104,12 @@ describe("loader on a wide collection on D1", () => {
 		// Five alias columns on top of `c.*` ask D1 for 101 columns here, and
 		// D1 refuses the statement rather than truncating it.
 		await expect(
-			sql
-				.raw(
-					`SELECT c.*, s.seo_no_index, s.seo_canonical, s.seo_title, s.seo_description, s.seo_image
-					 FROM ec_${COLLECTION} c
-					 LEFT JOIN _emdash_seo s ON s.collection = '${COLLECTION}' AND s.content_id = c.id`,
-				)
-				.execute(db),
+			sql<Record<string, unknown>>`
+				SELECT c.*, s.seo_no_index, s.seo_canonical, s.seo_title, s.seo_description, s.seo_image
+				FROM ${sql.ref(`ec_${COLLECTION}`)} c
+				LEFT JOIN ${sql.ref("_emdash_seo")} s
+				ON s.collection = ${COLLECTION} AND s.content_id = c.id
+			`.execute(db),
 		).rejects.toThrow(/too many columns in result set/);
 	});
 
