@@ -427,6 +427,53 @@ describe("Portable Text ↔ ProseMirror conversion", () => {
 		await vi.waitFor(() => expect(onChange).toHaveBeenCalled(), { timeout: 2000 });
 	});
 
+	it("keeps safe content editable when a section contains an unsafe table", async () => {
+		const onChange = vi.fn();
+		const { screen, editor, pm } = await renderAndGetEditor({
+			value: [textBlock("Safe content")],
+			onChange,
+		});
+		const unsafeSection = {
+			id: "section-table",
+			slug: "unsafe-table-section",
+			title: "Unsafe table section",
+			keywords: [],
+			content: [
+				{
+					_type: "table",
+					_key: "unsafe-table",
+					rows: [
+						{
+							_type: "tableRow",
+							_key: "row",
+							cells: [
+								{
+									_type: "tableCell",
+									_key: "cell",
+									content: [{ _type: "image", src: "/unsupported.png" }],
+								},
+							],
+						},
+					],
+				},
+			],
+			source: "user",
+			createdAt: "2026-09-07T00:00:00.000Z",
+			updatedAt: "2026-09-07T00:00:00.000Z",
+		};
+
+		await React.act(async () => {
+			sectionPickerProps.current?.onSelect(unsafeSection);
+		});
+
+		await expect.element(screen.getByRole("alert")).toHaveTextContent("Could not insert section");
+		expect(document.querySelector(".ProseMirror")).toBe(pm);
+		expect(editor.getText()).toBe("Safe content");
+
+		typeIntoEditor(editor, " still editable");
+		await vi.waitFor(() => expect(onChange).toHaveBeenCalled(), { timeout: 2000 });
+	});
+
 	it("renders a paragraph from PT value", async () => {
 		await render(<PortableTextEditor value={[textBlock("Hello world")]} />);
 		const pm = await waitForEditor();
@@ -1446,5 +1493,117 @@ describe("Code block copy action", () => {
 		await screen.getByPlaceholder("Language").fill("Custom Language");
 		clickPickerAction("Apply language");
 		await vi.waitFor(() => expect(storedLanguage()).toBe("custom-language"));
+	});
+
+	it("prevents block formatting that cannot survive inside a table cell", async () => {
+		const { editor } = await renderAndGetEditor();
+		editor.chain().focus().insertTable({ rows: 1, cols: 1, withHeaderRow: false }).run();
+
+		const changedToHeading = editor.chain().focus().toggleHeading({ level: 2 }).run();
+		const table = editor.getJSON().content?.find((node) => node.type === "table");
+		const cellContent = table?.content?.[0]?.content?.[0]?.content;
+
+		expect(changedToHeading).toBe(false);
+		expect(cellContent?.map((node) => node.type)).toEqual(["paragraph"]);
+	});
+
+	it("assigns stable unique keys to newly created table structures", async () => {
+		const { editor } = await renderAndGetEditor();
+		editor.chain().focus().insertTable({ rows: 1, cols: 2, withHeaderRow: false }).run();
+
+		const tableKeys = () => {
+			const keys: string[] = [];
+			editor.state.doc.descendants((node) => {
+				if (!["table", "tableRow", "tableCell", "tableHeader"].includes(node.type.name)) {
+					return;
+				}
+				keys.push(node.attrs.emdashKey);
+			});
+			return keys;
+		};
+		const initialKeys = tableKeys();
+
+		expect(initialKeys).toHaveLength(4);
+		expect(initialKeys.every((key) => typeof key === "string" && key.length > 0)).toBe(true);
+		expect(new Set(initialKeys).size).toBe(initialKeys.length);
+
+		editor.chain().focus().addRowAfter().run();
+		const expandedKeys = tableKeys();
+		expect(expandedKeys.slice(0, initialKeys.length)).toEqual(initialKeys);
+		expect(new Set(expandedKeys).size).toBe(expandedKeys.length);
+	});
+
+	it("does not erase opaque metadata when separate tables reuse structural keys", async () => {
+		const table = (key: string, text: string, source: string) => ({
+			_type: "table",
+			_key: key,
+			rows: [
+				{
+					_type: "tableRow",
+					_key: "shared-row",
+					cells: [
+						{
+							_type: "tableCell",
+							_key: "shared-cell",
+							source,
+							content: [{ _type: "span", _key: `${key}-span`, text }],
+						},
+					],
+				},
+			],
+		});
+		const { editor } = await renderAndGetEditor({
+			value: [
+				table("first-table", "First", "first-source"),
+				table("second-table", "Second", "second-source"),
+			],
+		});
+		let firstTextPosition = 0;
+		editor.state.doc.descendants((node, position) => {
+			if (node.isText && node.text === "First") firstTextPosition = position;
+		});
+
+		editor.chain().focus().setTextSelection(firstTextPosition).addRowAfter().run();
+
+		const tables = editor.getJSON().content?.filter((node) => node.type === "table") ?? [];
+		expect(tables[0]?.content?.[0]?.content?.[0]?.attrs?.emdashData).toEqual({
+			source: "first-source",
+		});
+		expect(tables[1]?.content?.[0]?.content?.[0]?.attrs?.emdashData).toEqual({
+			source: "second-source",
+		});
+		expect(tables[0]?.content?.[0]?.content?.[0]?.attrs?.emdashKey).toBe("shared-cell");
+		expect(tables[1]?.content?.[0]?.content?.[0]?.attrs?.emdashKey).toBe("shared-cell");
+	});
+
+	it("refuses to edit stored table cell content that cannot round-trip safely", async () => {
+		const screen = await render(
+			<PortableTextEditor
+				value={[
+					{
+						_type: "table",
+						_key: "unsafe-table",
+						rows: [
+							{
+								_type: "tableRow",
+								_key: "unsafe-row",
+								cells: [
+									{
+										_type: "tableCell",
+										_key: "unsafe-cell",
+										content: [{ _type: "image", src: "/lost.png" }],
+									},
+								],
+							},
+						],
+					},
+				]}
+			/>,
+		);
+
+		await expect
+			.element(screen.getByRole("alert"))
+			.toHaveTextContent("This table cannot be edited safely");
+		expect(document.querySelector(".ProseMirror")).toBeNull();
 	});
 });

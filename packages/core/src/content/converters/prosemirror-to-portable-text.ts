@@ -4,6 +4,11 @@
  * Converts TipTap's ProseMirror JSON format to Portable Text for storage.
  */
 
+import {
+	UnsafePortableTextTableError,
+	proseMirrorTableToPortableText,
+} from "@emdash-cms/admin/portable-text-table";
+
 import { sanitizeGalleryImages } from "./gallery.js";
 import {
 	UnsupportedPortableTextMarksError,
@@ -90,6 +95,21 @@ function convertNode(
 
 		case "gallery":
 			return convertGallery(node);
+
+		case "table": {
+			const result = proseMirrorTableToPortableText(node, {
+				path,
+				createKey: generateKey,
+				inlineToSpans: (content) => {
+					const { children, markDefs } = convertInlineContent(content, true);
+					return { content: children, markDefs };
+				},
+			});
+			if (!result.ok) {
+				throw new UnsafePortableTextTableError(result.reason, result.raw, result.renderFallback);
+			}
+			return result.table;
+		}
 
 		case "horizontalRule":
 			return {
@@ -364,7 +384,10 @@ function convertGallery(node: ProseMirrorNode): PortableTextGalleryBlock {
 /**
  * Convert inline content (text nodes with marks) to Portable Text spans
  */
-function convertInlineContent(nodes: ProseMirrorNode[]): {
+function convertInlineContent(
+	nodes: ProseMirrorNode[],
+	preserveHardBreakBoundary = false,
+): {
 	children: PortableTextSpan[];
 	markDefs: PortableTextMarkDef[];
 } {
@@ -391,7 +414,7 @@ function convertInlineContent(nodes: ProseMirrorNode[]): {
 			});
 		} else if (node.type === "hardBreak") {
 			// Hard breaks become newlines in the text
-			if (children.length > 0) {
+			if (children.length > 0 && !preserveHardBreakBoundary) {
 				const lastChild = children.at(-1)!;
 				lastChild.text += "\n";
 			} else {

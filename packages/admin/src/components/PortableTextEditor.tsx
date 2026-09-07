@@ -96,10 +96,6 @@ import Focus from "@tiptap/extension-focus";
 import Placeholder from "@tiptap/extension-placeholder";
 import Subscript from "@tiptap/extension-subscript";
 import Superscript from "@tiptap/extension-superscript";
-import { Table } from "@tiptap/extension-table";
-import { TableCell } from "@tiptap/extension-table-cell";
-import { TableHeader } from "@tiptap/extension-table-header";
-import { TableRow } from "@tiptap/extension-table-row";
 import TextAlign from "@tiptap/extension-text-align";
 import Typography from "@tiptap/extension-typography";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
@@ -121,6 +117,12 @@ import {
 	findUnsupportedPortableTextMarks,
 } from "../lib/portable-text-marks.js";
 import { cn } from "../lib/utils";
+import {
+	UnsafePortableTextTableError,
+	portableTextTableToProseMirror,
+	proseMirrorTableToPortableText,
+	type PortableTextTableProseMirrorNode,
+} from "../portable-text-table.js";
 import { CaretNext } from "./ArrowIcons.js";
 import { BlockKitMediaPickerField } from "./BlockKitMediaPickerField";
 import { CodeBlockExtension } from "./editor/CodeBlockNode";
@@ -139,6 +141,13 @@ import {
 	registerPluginBlocks,
 	resolveIcon,
 } from "./editor/PluginBlockNode";
+import {
+	EmDashTable,
+	EmDashTableCell,
+	EmDashTableHeader,
+	EmDashTableRow,
+	TableIdentity,
+} from "./editor/TableExtensions.js";
 import { MediaPickerModal } from "./MediaPickerModal";
 import { SectionPickerModal } from "./SectionPickerModal";
 
@@ -596,74 +605,21 @@ function convertPMNode(
 		}
 
 		case "table": {
-			const tableKey = generateKey();
-			const tableContent = (node.content || []) as Array<{
-				type: string;
-				content?: Array<{
-					type: string;
-					content?: unknown[];
-				}>;
-			}>;
-
-			const rows = tableContent
-				.filter((row) => row.type === "tableRow")
-				.map((row, rowIndex) => {
-					const cells = (row.content || []).map((cell, cellIndex) => {
-						const isHeader = cell.type === "tableHeader";
-						const cellContent = (cell.content || []) as Array<{
-							type: string;
-							content?: unknown[];
-						}>;
-
-						const contentSpans: PortableTextSpan[] = [];
-						const cellMarkDefs: PortableTextMarkDef[] = [];
-						let paragraphCount = 0;
-						for (const paragraph of cellContent) {
-							if (paragraph.type === "paragraph") {
-								if (paragraphCount > 0) {
-									contentSpans.push({
-										_type: "span",
-										_key: generateKey(),
-										text: "\n",
-									});
-								}
-								const { children, markDefs } = convertInlineContent(paragraph.content || [], true);
-								contentSpans.push(...children);
-								cellMarkDefs.push(...markDefs);
-								paragraphCount++;
-							}
-						}
-
-						if (contentSpans.length === 0) {
-							contentSpans.push({
-								_type: "span",
-								_key: generateKey(),
-								text: "",
-							});
-						}
-
-						return {
-							_type: "tableCell" as const,
-							_key: `${tableKey}_r${rowIndex}_c${cellIndex}`,
-							content: contentSpans,
-							isHeader,
-							markDefs: cellMarkDefs.length > 0 ? cellMarkDefs : undefined,
-						};
-					});
-
+			const result = proseMirrorTableToPortableText(node, {
+				path,
+				createKey: generateKey,
+				inlineToSpans: (content) => {
+					const { children, markDefs } = convertInlineContent(content, true);
 					return {
-						_type: "tableRow" as const,
-						_key: `${tableKey}_r${rowIndex}`,
-						cells,
+						content: children,
+						markDefs: markDefs.length > 0 ? markDefs : undefined,
 					};
-				});
-
-			return {
-				_type: "table",
-				_key: tableKey,
-				rows,
-				hasHeaderRow: rows[0]?.cells.some((cell) => cell.isHeader) ?? false,
-			};
+				},
+			});
+			if (!result.ok) {
+				throw new UnsafePortableTextTableError(result.reason, result.raw, result.renderFallback);
+			}
+			return result.table;
 		}
 
 		case "pluginBlock": {
@@ -907,7 +863,7 @@ function portableTextToProsemirror(blocks: PortableTextBlock[]): {
 
 			content.push(convertPTList(listBlocks, listType, `root:${runStart}`));
 		} else {
-			const converted = convertPTBlock(block);
+			const converted = convertPTBlock(block, `root:${i}`);
 			if (converted) {
 				content.push(converted);
 			}
@@ -949,7 +905,7 @@ function belongsToNestedGroup(
 	return anchorId ? itemId === anchorId : itemId === undefined;
 }
 
-function convertPTBlock(block: PortableTextBlock): unknown {
+function convertPTBlock(block: PortableTextBlock, path: string): unknown {
 	switch (block._type) {
 		case "block": {
 			if (!isTextBlock(block)) return null;
@@ -1078,63 +1034,16 @@ function convertPTBlock(block: PortableTextBlock): unknown {
 		}
 
 		case "table": {
-			const tableBlock = block as {
-				_type: "table";
-				_key: string;
-				rows?: Array<{
-					_type: "tableRow";
-					_key: string;
-					cells: Array<{
-						_type: "tableCell";
-						_key: string;
-						content: PortableTextSpan[];
-						isHeader?: boolean;
-						markDefs?: PortableTextMarkDef[];
-					}>;
-				}>;
-				hasHeaderRow?: boolean;
-				markDefs?: PortableTextMarkDef[];
-			};
-
-			const tableMarkDefs = tableBlock.markDefs || [];
-			const tableMarkDefsMap = new Map(tableMarkDefs.map((md) => [md._key, md]));
-
-			const rows = (tableBlock.rows || []).map((row, rowIndex) => {
-				const cells = row.cells.map((cell) => {
-					const cellType =
-						cell.isHeader || (tableBlock.hasHeaderRow && rowIndex === 0)
-							? "tableHeader"
-							: "tableCell";
-
-					const cellMarkDefs = cell.markDefs || [];
-					const markDefsMap = new Map([
-						...tableMarkDefsMap,
-						...cellMarkDefs.map((md) => [md._key, md] as const),
-					]);
-
-					const pmContent = convertPTSpans(cell.content, [...markDefsMap.values()]);
-
-					return {
-						type: cellType,
-						content: [
-							{
-								type: "paragraph",
-								content: pmContent.length > 0 ? pmContent : undefined,
-							},
-						],
-					};
-				});
-
-				return {
-					type: "tableRow",
-					content: cells,
-				};
+			const result = portableTextTableToProseMirror(block, {
+				path,
+				createKey: generateKey,
+				spansToInline: (content, markDefs) =>
+					convertPTSpans(content, markDefs) as PortableTextTableProseMirrorNode[],
 			});
-
-			return {
-				type: "table",
-				content: rows,
-			};
+			if (!result.ok) {
+				throw new UnsafePortableTextTableError(result.reason, result.raw, result.renderFallback);
+			}
+			return result.node;
 		}
 
 		default: {
@@ -2644,7 +2553,10 @@ export function PortableTextEditor({
 	// Multi-select media picker state (for gallery insertion)
 	const [galleryPickerOpen, setGalleryPickerOpen] = React.useState(false);
 	const [conversionErrorMarks, setConversionErrorMarks] = React.useState<string[]>([]);
+	const [conversionTableError, setConversionTableError] =
+		React.useState<UnsafePortableTextTableError | null>(null);
 	const [sectionInsertErrorMarks, setSectionInsertErrorMarks] = React.useState<string[]>([]);
+	const [sectionInsertTableError, setSectionInsertTableError] = React.useState(false);
 
 	// Plugin block insertion/editing state
 	const [pluginBlockModal, setPluginBlockModal] = React.useState<PluginBlockDef | null>(null);
@@ -2807,13 +2719,22 @@ export function PortableTextEditor({
 		() => [...new Set([...initialUnsupportedMarks, ...conversionErrorMarks])].toSorted(),
 		[conversionErrorMarks, initialUnsupportedMarks],
 	);
-	const initialContent = React.useMemo(
-		() =>
-			initialUnsupportedMarks.length > 0
-				? { type: "doc" as const, content: [{ type: "paragraph" }] }
-				: portableTextToProsemirror(value || []),
-		[], // Only compute once on mount
-	);
+	const initialConversion = React.useMemo(() => {
+		const emptyDocument = { type: "doc" as const, content: [{ type: "paragraph" }] };
+		if (initialUnsupportedMarks.length > 0) {
+			return { content: emptyDocument, tableError: null };
+		}
+		try {
+			return { content: portableTextToProsemirror(value || []), tableError: null };
+		} catch (error) {
+			if (error instanceof UnsafePortableTextTableError) {
+				return { content: emptyDocument, tableError: error };
+			}
+			throw error;
+		}
+	}, []); // Only compute once on mount
+	const initialContent = initialConversion.content;
+	const tableConversionError = initialConversion.tableError ?? conversionTableError;
 
 	// Memoize the entire extensions array so TipTap never diffs/replaces
 	// plugins on re-render. The loop was: extension array changes → useEditor
@@ -2855,13 +2776,14 @@ export function PortableTextEditor({
 			PluginBlockExtension,
 			Subscript,
 			Superscript,
-			Table.configure({
+			EmDashTable.configure({
 				allowTableNodeSelection: true,
 				resizable: true,
 			}),
-			TableRow,
-			TableHeader,
-			TableCell,
+			EmDashTableRow,
+			EmDashTableHeader,
+			EmDashTableCell,
+			TableIdentity,
 			Placeholder.configure({
 				includeChildren: true,
 				placeholder: () => placeholderRef.current,
@@ -2901,7 +2823,7 @@ export function PortableTextEditor({
 	const editor = useEditor({
 		extensions,
 		content: initialContent as Parameters<typeof useEditor>[0]["content"],
-		editable: editable && unsupportedMarks.length === 0,
+		editable: editable && unsupportedMarks.length === 0 && tableConversionError === null,
 		immediatelyRender: true,
 		editorProps,
 		onUpdate: ({ editor: updatedEditor }) => {
@@ -2916,6 +2838,10 @@ export function PortableTextEditor({
 				} catch (error) {
 					if (error instanceof UnsupportedPortableTextMarksError) {
 						setConversionErrorMarks(error.marks);
+						return;
+					}
+					if (error instanceof UnsafePortableTextTableError) {
+						setConversionTableError(error);
 						return;
 					}
 					throw error;
@@ -3098,14 +3024,14 @@ export function PortableTextEditor({
 	// reference before TipTap destroys the instance (e.g. when keying by item.id
 	// to switch translations).
 	React.useEffect(() => {
-		if (editor && onEditorReady && unsupportedMarks.length === 0) {
+		if (editor && onEditorReady && unsupportedMarks.length === 0 && tableConversionError === null) {
 			onEditorReady(editor);
 			return () => {
 				onEditorReady(null);
 			};
 		}
 		return undefined;
-	}, [editor, onEditorReady, unsupportedMarks.length]);
+	}, [editor, onEditorReady, tableConversionError, unsupportedMarks.length]);
 
 	React.useEffect(() => {
 		const viewport = window.visualViewport;
@@ -3318,11 +3244,18 @@ export function PortableTextEditor({
 			} catch (error) {
 				if (error instanceof UnsupportedPortableTextMarksError) {
 					setSectionInsertErrorMarks(error.marks);
+					setSectionInsertTableError(false);
+					return;
+				}
+				if (error instanceof UnsafePortableTextTableError) {
+					setSectionInsertErrorMarks([]);
+					setSectionInsertTableError(true);
 					return;
 				}
 				throw error;
 			}
 			setSectionInsertErrorMarks([]);
+			setSectionInsertTableError(false);
 
 			const insertPos = pendingBlockInsertPosRef.current;
 			const chain = editor.chain().focus();
@@ -3335,6 +3268,24 @@ export function PortableTextEditor({
 		},
 		[editor],
 	);
+
+	if (tableConversionError) {
+		return (
+			<div
+				role="alert"
+				className={cn(
+					className,
+					"rounded-lg border border-kumo-error bg-kumo-error/10 p-4 text-start",
+				)}
+				aria-labelledby={ariaLabelledby}
+			>
+				<p className="font-medium text-kumo-error">{t`This table cannot be edited safely`}</p>
+				<p className="mt-1 text-sm text-kumo-subtle">
+					{t`This field contains table content that the editor cannot preserve. Update it through the API before editing or saving this content.`}
+				</p>
+			</div>
+		);
+	}
 
 	if (unsupportedMarks.length > 0) {
 		const markList = unsupportedMarks.join(", ");
@@ -3368,7 +3319,7 @@ export function PortableTextEditor({
 
 	return (
 		<div ref={floatingRootRef} className="relative min-w-0" data-emdash-editor-floating-root>
-			{sectionInsertErrorMarks.length > 0 && (
+			{(sectionInsertErrorMarks.length > 0 || sectionInsertTableError) && (
 				<div
 					role="alert"
 					className="mb-3 flex items-start justify-between gap-4 rounded-lg border border-kumo-error bg-kumo-error/10 p-4 text-start"
@@ -3376,18 +3327,25 @@ export function PortableTextEditor({
 					<div className="min-w-0">
 						<p className="font-medium text-kumo-error">{t`Could not insert section`}</p>
 						<p className="mt-1 text-sm text-kumo-subtle">
-							<Trans>
-								This section contains unsupported Portable Text marks:{" "}
-								<code dir="auto">{sectionInsertErrorMarks.join(", ")}</code>. Update the section
-								before inserting it.
-							</Trans>
+							{sectionInsertTableError ? (
+								t`This section contains table content that the editor cannot preserve. Update the section before inserting it.`
+							) : (
+								<Trans>
+									This section contains unsupported Portable Text marks:{" "}
+									<code dir="auto">{sectionInsertErrorMarks.join(", ")}</code>. Update the section
+									before inserting it.
+								</Trans>
+							)}
 						</p>
 					</div>
 					<Button
 						type="button"
 						variant="ghost"
 						shape="square"
-						onClick={() => setSectionInsertErrorMarks([])}
+						onClick={() => {
+							setSectionInsertErrorMarks([]);
+							setSectionInsertTableError(false);
+						}}
 						aria-label={t`Dismiss section error`}
 					>
 						<X className="h-4 w-4" aria-hidden="true" />
