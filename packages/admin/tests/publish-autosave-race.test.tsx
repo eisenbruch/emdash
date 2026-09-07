@@ -549,6 +549,7 @@ describe("ContentEditPage publish and autosave ordering", () => {
 			data: { title: "After schedule" },
 			_rev: "rev-schedule-1",
 		});
+		await expect.element(screen.getByRole("button", { name: "Saved", exact: true })).toBeDisabled();
 
 		const scheduled = screen.getByRole("button", { name: "Scheduled update", exact: true });
 		await expect.element(scheduled).toBeVisible();
@@ -559,13 +560,17 @@ describe("ContentEditPage publish and autosave ordering", () => {
 		await vi.waitFor(() => {
 			expect(server!.requests.filter((request) => request.method === "DELETE")).toHaveLength(1);
 		});
+		await expect
+			.element(screen.getByRole("button", { name: "Publish changes", exact: true }))
+			.toBeEnabled();
+		expect(server.requests.filter((request) => request.method === "PUT")).toHaveLength(2);
 
 		await screen.getByRole("textbox", { name: "Title" }).fill("After unschedule");
 		await vi.advanceTimersByTimeAsync(2000);
 		await vi.waitFor(() => {
-			expect(server!.requests.filter((request) => request.method === "PUT")).toHaveLength(4);
+			expect(server!.requests.filter((request) => request.method === "PUT")).toHaveLength(3);
 		});
-		const saveAfterUnschedule = server.requests.filter((request) => request.method === "PUT")[3];
+		const saveAfterUnschedule = server.requests.filter((request) => request.method === "PUT")[2];
 		expect(saveAfterUnschedule?.body).toMatchObject({
 			data: { title: "After unschedule" },
 			_rev: "rev-unschedule-1",
