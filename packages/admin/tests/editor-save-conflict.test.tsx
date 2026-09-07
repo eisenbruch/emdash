@@ -162,7 +162,9 @@ async function renderEditPage() {
 		params: { collection: "posts", id: "post_1" },
 	});
 	const screen = await render(<TestApp />);
-	await expect.element(screen.getByRole("button", { name: "Publish", exact: true })).toBeVisible();
+	await expect
+		.element(screen.getByRole("textbox", { name: "Title", exact: true }))
+		.toHaveValue("Draft title");
 	return screen;
 }
 
