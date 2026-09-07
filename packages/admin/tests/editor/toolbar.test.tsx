@@ -1,4 +1,5 @@
 import type { Editor } from "@tiptap/core";
+import { AllSelection, NodeSelection, TextSelection } from "@tiptap/pm/state";
 import { CellSelection } from "@tiptap/pm/tables";
 import { describe, it, expect, vi } from "vitest";
 import { userEvent } from "vitest/browser";
@@ -228,6 +229,18 @@ function expectAlignmentState(
 
 	for (const [alignment, button] of Object.entries(buttons)) {
 		expect(button.getAttribute("aria-pressed")).toBe(String(alignment === active));
+	}
+}
+
+function expectMixedTableAlignmentState(
+	screen: Awaited<ReturnType<typeof render>>,
+	mixed: Array<"left" | "center" | "right">,
+) {
+	for (const alignment of ["left", "center", "right"] as const) {
+		const label = `Align ${alignment[0]!.toUpperCase()}${alignment.slice(1)}`;
+		expect(getToolbarButton(screen, label).element().getAttribute("aria-pressed")).toBe(
+			mixed.includes(alignment) ? "mixed" : "false",
+		);
 	}
 }
 
@@ -942,14 +955,14 @@ describe("Text Alignment", () => {
 			.chain()
 			.focus()
 			.setTextSelection(cellPositions[0]! + 2)
-			.setTextAlign("center")
+			.setCellAttribute("textAlign", "center")
 			.run();
 		editor.view.dispatch(
 			editor.state.tr.setSelection(
 				CellSelection.create(editor.state.doc, cellPositions[0]!, cellPositions[1]!),
 			),
 		);
-		await vi.waitFor(() => expectAlignmentState(screen, null));
+		await vi.waitFor(() => expectMixedTableAlignmentState(screen, ["left", "center"]));
 
 		editor.view.dispatch(
 			editor.state.tr.setSelection(
@@ -958,6 +971,188 @@ describe("Text Alignment", () => {
 		);
 		await vi.waitFor(() => expectAlignmentState(screen, "left"));
 	});
+
+	it("stores table alignment on cells and disables lossy block actions", async () => {
+		const { screen, editor } = await renderEditor();
+		editor.chain().focus().insertTable({ rows: 2, cols: 2, withHeaderRow: false }).run();
+		const cellPositions: number[] = [];
+		editor.state.doc.descendants((node, pos) => {
+			if (node.type.name === "tableCell") cellPositions.push(pos);
+		});
+		editor
+			.chain()
+			.focus()
+			.setTextSelection(cellPositions[0]! + 2)
+			.run();
+
+		getToolbarButton(screen, "Align Right").element().click();
+
+		await vi.waitFor(() => {
+			const cell = editor.state.doc.nodeAt(cellPositions[0]!);
+			expect(cell?.attrs.textAlign).toBe("right");
+			expect(cell?.firstChild?.attrs.textAlign).not.toBe("right");
+		});
+		for (const label of [
+			"Bullet List",
+			"Numbered List",
+			"Quote",
+			"Code Block",
+			"Insert Image",
+			"Insert HTML",
+		]) {
+			await expect.element(getToolbarButton(screen, label)).toBeDisabled();
+		}
+		await expect.element(screen.getByRole("button", { name: "Headings" })).toBeDisabled();
+	});
+
+	it("updates every cell when the first selected cell already has the requested alignment", async () => {
+		const { screen, editor } = await renderEditor();
+		editor.chain().focus().insertTable({ rows: 2, cols: 2, withHeaderRow: false }).run();
+		const cellPositions: number[] = [];
+		editor.state.doc.descendants((node, pos) => {
+			if (node.type.name === "tableCell") cellPositions.push(pos);
+		});
+		const transaction = editor.state.tr;
+		for (const [index, textAlign] of ["left", "right", "center", null].entries()) {
+			const position = cellPositions[index]!;
+			const cell = transaction.doc.nodeAt(position)!;
+			transaction.setNodeMarkup(position, undefined, { ...cell.attrs, textAlign });
+		}
+		editor.view.dispatch(transaction);
+		editor.view.dispatch(
+			editor.state.tr.setSelection(
+				CellSelection.create(editor.state.doc, cellPositions[0]!, cellPositions[1]!),
+			),
+		);
+		await vi.waitFor(() => expectMixedTableAlignmentState(screen, ["left", "right"]));
+		let documentTransactions = 0;
+		editor.on("transaction", ({ transaction: change }) => {
+			if (change.docChanged) documentTransactions++;
+		});
+
+		getToolbarButton(screen, "Align Left").element().click();
+
+		await vi.waitFor(() => expectAlignmentState(screen, "left"));
+		expect(
+			cellPositions.map((position) => editor.state.doc.nodeAt(position)?.attrs.textAlign),
+		).toEqual(["left", "left", "center", null]);
+		expect(documentTransactions).toBe(1);
+
+		expect(editor.commands.undo()).toBe(true);
+		await vi.waitFor(() => expectMixedTableAlignmentState(screen, ["left", "right"]));
+		expect(
+			cellPositions.map((position) => editor.state.doc.nodeAt(position)?.attrs.textAlign),
+		).toEqual(["left", "right", "center", null]);
+	});
+
+	it("disables cell alignment for a whole-table node selection", async () => {
+		const { screen, editor } = await renderEditor();
+		editor.chain().focus().insertTable({ rows: 2, cols: 2, withHeaderRow: false }).run();
+		let tablePosition = -1;
+		editor.state.doc.descendants((node, position) => {
+			if (node.type.name === "table" && tablePosition === -1) tablePosition = position;
+		});
+		expect(tablePosition).toBeGreaterThanOrEqual(0);
+		editor.view.dispatch(
+			editor.state.tr.setSelection(NodeSelection.create(editor.state.doc, tablePosition)),
+		);
+		const before = editor.getJSON();
+
+		for (const label of ["Align Left", "Align Center", "Align Right"]) {
+			const button = getToolbarButton(screen, label);
+			await expect.element(button).toBeDisabled();
+			expect(button.element().getAttribute("aria-pressed")).toBe("false");
+			button.element().click();
+		}
+		expect(editor.getJSON()).toEqual(before);
+	});
+
+	it("disables lossy block and alignment actions when select-all includes a table", async () => {
+		const { screen, editor } = await renderEditor();
+		editor.chain().focus().insertTable({ rows: 2, cols: 2, withHeaderRow: false }).run();
+		editor.view.dispatch(editor.state.tr.setSelection(new AllSelection(editor.state.doc)));
+		const before = editor.getJSON();
+
+		for (const label of [
+			"Bullet List",
+			"Numbered List",
+			"Quote",
+			"Code Block",
+			"Insert Image",
+			"Insert HTML",
+			"Align Left",
+			"Align Center",
+			"Align Right",
+		]) {
+			const button = getToolbarButton(screen, label);
+			await expect.element(button).toBeDisabled();
+			button.element().click();
+		}
+		await expect.element(screen.getByRole("button", { name: "Headings" })).toBeDisabled();
+		editor.view.focus();
+		const mod = navigator.platform.includes("Mac") ? "{Meta>}" : "{Control>}";
+		const modUp = navigator.platform.includes("Mac") ? "{/Meta}" : "{/Control}";
+		for (const shortcut of ["8", "b", "e"]) {
+			await userEvent.keyboard(`${mod}{Shift>}${shortcut}{/Shift}${modUp}`);
+			expect(editor.getJSON()).toEqual(before);
+		}
+		for (const shortcut of ["2", "c"]) {
+			await userEvent.keyboard(`${mod}{Alt>}${shortcut}{/Alt}${modUp}`);
+			expect(editor.getJSON()).toEqual(before);
+		}
+		expect(editor.getJSON()).toEqual(before);
+		expect(editor.getJSON().content?.some((node) => node.type === "table")).toBe(true);
+	});
+
+	it.each(["forward", "backward"] as const)(
+		"disables alignment for a %s selection crossing a table boundary",
+		async (direction) => {
+			const { screen, editor } = await renderEditor();
+			editor.commands.setContent({
+				type: "doc",
+				content: [
+					{
+						type: "table",
+						content: [
+							{
+								type: "tableRow",
+								content: [
+									{
+										type: "tableCell",
+										content: [
+											{
+												type: "paragraph",
+												content: [{ type: "text", text: "Cell" }],
+											},
+										],
+									},
+								],
+							},
+						],
+					},
+					{
+						type: "paragraph",
+						content: [{ type: "text", text: "After" }],
+					},
+				],
+			});
+			const cell = getTextPosition(editor, "Cell");
+			const after = getTextPosition(editor, "After") + "After".length;
+			editor.view.dispatch(
+				editor.state.tr.setSelection(
+					TextSelection.create(
+						editor.state.doc,
+						direction === "forward" ? cell : after,
+						direction === "forward" ? after : cell,
+					),
+				),
+			);
+
+			for (const label of ["Align Left", "Align Center", "Align Right"]) {
+				await expect.element(getToolbarButton(screen, label)).toBeDisabled();
+			}
+		},
+	);
 
 	it("uses the writing direction for unannotated text without masking explicit or unsupported alignment", async () => {
 		const { screen, editor } = await renderEditor({

@@ -2,7 +2,8 @@ export const MAX_TABLE_SPAN = 100;
 export const MAX_TABLE_COLUMN_WIDTH = 4096;
 export const TABLE_CELL_MIN_WIDTH = 96;
 export const TABLE_COLUMN_WIDTH_STEP = 16;
-export const TABLE_RESIZE_HANDLE_WIDTH = 8;
+export const TABLE_RESIZE_HANDLE_WIDTH = 2;
+export const TABLE_RESIZE_TARGET_WIDTH = 24;
 export const MAX_TABLE_REPAIRED_SLOTS = 20_000;
 export const MAX_TABLE_PASTE_ROWS = 100;
 export const MAX_TABLE_PASTE_COLUMNS = 100;
@@ -421,7 +422,9 @@ export function getPortableTextTableColumnWidths(
 			const colspan = cell.colspan ?? 1;
 			for (let offset = 0; offset < colspan; offset++) {
 				const value = cell.colwidth?.[offset];
-				if (value && widths[column + offset] === undefined) widths[column + offset] = value;
+				if (value && widths[column + offset] === undefined) {
+					widths[column + offset] = Math.max(TABLE_CELL_MIN_WIDTH, value);
+				}
 			}
 			occupy(occupied, row, column, cell.rowspan ?? 1, colspan);
 			column += colspan;

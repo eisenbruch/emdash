@@ -213,6 +213,25 @@ describe("Portable Text table normalization", () => {
 		expect(mixed.table.rows[0]!.cells[0]!.colwidth).toEqual([144, 96]);
 	});
 
+	it("clamps rendered column widths without changing valid stored preferences", () => {
+		const table = {
+			_type: "table" as const,
+			_key: "narrow-table",
+			rows: [
+				row(
+					"narrow-row",
+					Array.from({ length: 10 }, (_, index) => ({
+						...cell(`narrow-${index}`, String(index)),
+						colwidth: [1],
+					})),
+				),
+			],
+		};
+
+		expect(getPortableTextTableColumnWidths(table)).toEqual(Array(10).fill(96));
+		expect(table.rows[0]!.cells.every((entry) => entry.colwidth[0] === 1)).toBe(true);
+	});
+
 	it("repairs overlapping spans into a rectangular grid without dropping source content", () => {
 		const result = normalizePortableTextTable(
 			{

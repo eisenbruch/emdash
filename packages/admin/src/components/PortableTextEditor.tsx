@@ -118,6 +118,7 @@ import {
 } from "../lib/portable-text-marks.js";
 import { cn } from "../lib/utils";
 import {
+	TABLE_CELL_MIN_WIDTH,
 	UnsafePortableTextTableError,
 	portableTextTableToProseMirror,
 	proseMirrorTableToPortableText,
@@ -141,13 +142,17 @@ import {
 	registerPluginBlocks,
 	resolveIcon,
 } from "./editor/PluginBlockNode";
+import { createTableCellSafety, type TablePasteRejection } from "./editor/TableCellSafety.js";
 import {
 	EmDashTable,
 	EmDashTableCell,
 	EmDashTableHeader,
 	EmDashTableRow,
 	TableIdentity,
+	selectionIsContainedInTableCells,
+	selectionTouchesTable,
 } from "./editor/TableExtensions.js";
+import { TableResize } from "./editor/TableResize.js";
 import { MediaPickerModal } from "./MediaPickerModal";
 import { SectionPickerModal } from "./SectionPickerModal";
 
@@ -1485,7 +1490,8 @@ function createSlashCommandsExtension(options: {
 						item.command({ editor, range });
 					},
 					items: ({ query }) => filterCommands(query),
-					allow: ({ range }) => getState().dismissedSlashFrom !== range.from,
+					allow: ({ range }) =>
+						!this.editor.isActive("table") && getState().dismissedSlashFrom !== range.from,
 					render: () => {
 						return {
 							onStart: (props) => {
@@ -2557,6 +2563,11 @@ export function PortableTextEditor({
 		React.useState<UnsafePortableTextTableError | null>(null);
 	const [sectionInsertErrorMarks, setSectionInsertErrorMarks] = React.useState<string[]>([]);
 	const [sectionInsertTableError, setSectionInsertTableError] = React.useState(false);
+	const tablePasteErrorIdRef = React.useRef(0);
+	const [tablePasteError, setTablePasteError] = React.useState<{
+		id: number;
+		reason: TablePasteRejection;
+	} | null>(null);
 
 	// Plugin block insertion/editing state
 	const [pluginBlockModal, setPluginBlockModal] = React.useState<PluginBlockDef | null>(null);
@@ -2778,12 +2789,19 @@ export function PortableTextEditor({
 			Superscript,
 			EmDashTable.configure({
 				allowTableNodeSelection: true,
-				resizable: true,
+				cellMinWidth: TABLE_CELL_MIN_WIDTH,
+				resizable: false,
 			}),
+			TableResize,
 			EmDashTableRow,
 			EmDashTableHeader,
 			EmDashTableCell,
 			TableIdentity,
+			TableSafetyShortcuts,
+			createTableCellSafety((reason) => {
+				tablePasteErrorIdRef.current++;
+				setTablePasteError({ id: tablePasteErrorIdRef.current, reason });
+			}),
 			Placeholder.configure({
 				includeChildren: true,
 				placeholder: () => placeholderRef.current,
@@ -3317,8 +3335,35 @@ export function PortableTextEditor({
 		);
 	}
 
+	const tablePasteErrorMessage =
+		tablePasteError?.reason === "too-large"
+			? t`This paste is too large. Paste fewer cells or less text at a time.`
+			: tablePasteError?.reason === "table-must-be-top-level"
+				? t`Tables cannot be pasted inside lists or quotes. Paste the table into its own paragraph and try again.`
+				: tablePasteError?.reason === "invalid-table"
+					? t`This table has unsupported cell formatting, merged cells, or column widths. Paste it as plain text or simplify the table and try again.`
+					: t`Table cells accept text, links, and formatting only.`;
+
 	return (
 		<div ref={floatingRootRef} className="relative min-w-0" data-emdash-editor-floating-root>
+			{tablePasteError && (
+				<div
+					key={tablePasteError.id}
+					role="alert"
+					className="mb-3 flex items-start justify-between gap-4 rounded-lg border border-kumo-error bg-kumo-error/10 p-4 text-start"
+				>
+					<p className="text-sm font-medium text-kumo-error">{tablePasteErrorMessage}</p>
+					<Button
+						type="button"
+						variant="ghost"
+						shape="square"
+						onClick={() => setTablePasteError(null)}
+						aria-label={t`Dismiss table paste error`}
+					>
+						<X className="h-4 w-4" aria-hidden="true" />
+					</Button>
+				</div>
+			)}
 			{(sectionInsertErrorMarks.length > 0 || sectionInsertTableError) && (
 				<div
 					role="alert"
@@ -3791,12 +3836,60 @@ function BubbleButton({
 }
 
 type TextAlignment = "left" | "center" | "right" | "justify";
+type AlignmentButtonState = boolean | "mixed";
 
-function getSelectionTextAlignment(editor: Editor): TextAlignment | null {
+function getSelectedTableCells(editor: Editor): ProseMirrorNode[] {
+	const { selection } = editor.state;
+	const cells: ProseMirrorNode[] = [];
+	if (selection instanceof CellSelection) {
+		selection.forEachCell((cell) => cells.push(cell));
+		return cells;
+	}
+	for (let depth = selection.$from.depth; depth > 0; depth--) {
+		const node = selection.$from.node(depth);
+		if (node.type.name === "tableCell" || node.type.name === "tableHeader") {
+			cells.push(node);
+			break;
+		}
+	}
+	return cells;
+}
+
+function getSelectionTextAlignments(editor: Editor): {
+	alignments: Set<TextAlignment>;
+	isCellSelection: boolean;
+	isTableAlignmentUnavailable: boolean;
+} {
+	const tableCells = getSelectedTableCells(editor);
+	if (selectionTouchesTable(editor.state) && !selectionIsContainedInTableCells(editor.state)) {
+		return {
+			alignments: new Set(),
+			isCellSelection: false,
+			isTableAlignmentUnavailable: true,
+		};
+	}
 	const ownerWindow = editor.view.dom.ownerDocument.defaultView;
 	const defaultAlignment: TextAlignment =
 		ownerWindow?.getComputedStyle(editor.view.dom).direction === "rtl" ? "right" : "left";
 	const alignments = new Set<TextAlignment>();
+	if (tableCells.length > 0) {
+		for (const cell of tableCells) {
+			const textAlign = cell.attrs.textAlign;
+			alignments.add(
+				textAlign === "left" ||
+					textAlign === "center" ||
+					textAlign === "right" ||
+					textAlign === "justify"
+					? textAlign
+					: defaultAlignment,
+			);
+		}
+		return {
+			alignments,
+			isCellSelection: editor.state.selection instanceof CellSelection,
+			isTableAlignmentUnavailable: false,
+		};
+	}
 
 	const collectAlignment = (node: ProseMirrorNode) => {
 		if (node.type.name !== "paragraph" && node.type.name !== "heading") return;
@@ -3829,8 +3922,72 @@ function getSelectionTextAlignment(editor: Editor): TextAlignment | null {
 		});
 	}
 
-	return alignments.size === 1 ? (alignments.values().next().value ?? null) : null;
+	return { alignments, isCellSelection: false, isTableAlignmentUnavailable: false };
 }
+
+function alignmentButtonState(
+	alignments: Set<TextAlignment>,
+	isCellSelection: boolean,
+	alignment: TextAlignment,
+): AlignmentButtonState {
+	if (alignments.size === 1) return alignments.has(alignment);
+	return isCellSelection && alignments.has(alignment) ? "mixed" : false;
+}
+
+function setSelectionTextAlignment(editor: Editor, alignment: TextAlignment): boolean {
+	if (selectionTouchesTable(editor.state) && !selectionIsContainedInTableCells(editor.state)) {
+		return false;
+	}
+	if (!(editor.state.selection instanceof CellSelection)) {
+		const chain = editor.chain().focus();
+		return editor.isActive("table")
+			? chain.setCellAttribute("textAlign", alignment).run()
+			: chain.setTextAlign(alignment).run();
+	}
+
+	editor.commands.focus();
+	const selection = editor.state.selection;
+	if (!(selection instanceof CellSelection)) return false;
+	const transaction = editor.state.tr;
+	selection.forEachCell((_cell, position) => {
+		const cell = transaction.doc.nodeAt(position);
+		if (cell && cell.attrs.textAlign !== alignment) {
+			transaction.setNodeMarkup(position, undefined, { ...cell.attrs, textAlign: alignment });
+		}
+	});
+	if (!transaction.docChanged) return false;
+	editor.view.dispatch(transaction);
+	return true;
+}
+
+const TableSafetyShortcuts = Extension.create({
+	name: "tableSafetyShortcuts",
+	priority: 1_200,
+	addKeyboardShortcuts() {
+		const blockUnsafeStructure = () => selectionTouchesTable(this.editor.state);
+		const setTableAlignment = (alignment: TextAlignment) => {
+			if (!selectionTouchesTable(this.editor.state)) return false;
+			setSelectionTextAlignment(this.editor, alignment);
+			return true;
+		};
+		return {
+			"Mod-Alt-1": blockUnsafeStructure,
+			"Mod-Alt-2": blockUnsafeStructure,
+			"Mod-Alt-3": blockUnsafeStructure,
+			"Mod-Alt-4": blockUnsafeStructure,
+			"Mod-Alt-5": blockUnsafeStructure,
+			"Mod-Alt-6": blockUnsafeStructure,
+			"Mod-Shift-7": blockUnsafeStructure,
+			"Mod-Shift-8": blockUnsafeStructure,
+			"Mod-Shift-b": blockUnsafeStructure,
+			"Mod-Alt-c": blockUnsafeStructure,
+			"Mod-Shift-l": () => setTableAlignment("left"),
+			"Mod-Shift-e": () => setTableAlignment("center"),
+			"Mod-Shift-r": () => setTableAlignment("right"),
+			"Mod-Shift-j": () => setTableAlignment("justify"),
+		};
+	},
+});
 
 /**
  * Editor Toolbar
@@ -3862,9 +4019,12 @@ function EditorToolbar({
 	const editorState = useEditorState({
 		editor,
 		selector: (ctx) => {
-			const textAlignment = getSelectionTextAlignment(ctx.editor);
+			const { alignments, isCellSelection, isTableAlignmentUnavailable } =
+				getSelectionTextAlignments(ctx.editor);
 			const isOrderedList = ctx.editor.isActive("orderedList");
+			const touchesTable = selectionTouchesTable(ctx.editor.state);
 			return {
+				isInTable: touchesTable,
 				isBold: ctx.editor.isActive("bold"),
 				isItalic: ctx.editor.isActive("italic"),
 				isUnderline: ctx.editor.isActive("underline"),
@@ -3876,9 +4036,10 @@ function EditorToolbar({
 				canRestartOrderedList: isOrderedList && ctx.editor.can().restartOrderedList(),
 				isBlockquote: ctx.editor.isActive("blockquote"),
 				isCodeBlock: ctx.editor.isActive("codeBlock"),
-				isAlignLeft: textAlignment === "left",
-				isAlignCenter: textAlignment === "center",
-				isAlignRight: textAlignment === "right",
+				alignLeftState: alignmentButtonState(alignments, isCellSelection, "left"),
+				alignCenterState: alignmentButtonState(alignments, isCellSelection, "center"),
+				alignRightState: alignmentButtonState(alignments, isCellSelection, "right"),
+				isTableAlignmentUnavailable,
 				isLink: ctx.editor.isActive("link"),
 				canUndo: ctx.editor.can().undo(),
 				canRedo: ctx.editor.can().redo(),
@@ -4047,6 +4208,7 @@ function EditorToolbar({
 				<ToolbarButton
 					onClick={() => editor.chain().focus().toggleBulletList().run()}
 					active={editorState.isBulletList}
+					disabled={editorState.isInTable}
 					title={t`Bullet List`}
 				>
 					<List className="h-4 w-4" aria-hidden="true" />
@@ -4054,6 +4216,7 @@ function EditorToolbar({
 				<ToolbarButton
 					onClick={() => editor.chain().focus().toggleOrderedList().run()}
 					active={editorState.isOrderedList}
+					disabled={editorState.isInTable}
 					title={t`Numbered List`}
 				>
 					<ListNumbers className="h-4 w-4" aria-hidden="true" />
@@ -4079,6 +4242,7 @@ function EditorToolbar({
 				<ToolbarButton
 					onClick={() => editor.chain().focus().toggleBlockquote().run()}
 					active={editorState.isBlockquote}
+					disabled={editorState.isInTable}
 					title={t`Quote`}
 				>
 					<Quotes className="h-4 w-4" aria-hidden="true" />
@@ -4086,14 +4250,23 @@ function EditorToolbar({
 				<ToolbarButton
 					onClick={() => editor.chain().focus().toggleCodeBlock().run()}
 					active={editorState.isCodeBlock}
+					disabled={editorState.isInTable}
 					title={t`Code Block`}
 				>
 					<CodeBlock className="h-4 w-4" aria-hidden="true" />
 				</ToolbarButton>
-				<ToolbarButton onClick={onInsertImage} title={t`Insert Image`}>
+				<ToolbarButton
+					onClick={onInsertImage}
+					disabled={editorState.isInTable}
+					title={t`Insert Image`}
+				>
 					<ImageIcon className="h-4 w-4" aria-hidden="true" />
 				</ToolbarButton>
-				<ToolbarButton onClick={() => insertHtmlBlock(editor)} title={t`Insert HTML`}>
+				<ToolbarButton
+					onClick={() => insertHtmlBlock(editor)}
+					disabled={editorState.isInTable}
+					title={t`Insert HTML`}
+				>
 					<BracketsAngle className="h-4 w-4" aria-hidden="true" />
 				</ToolbarButton>
 			</ToolbarGroup>
@@ -4103,22 +4276,25 @@ function EditorToolbar({
 			{/* Text alignment */}
 			<ToolbarGroup>
 				<ToolbarButton
-					onClick={() => editor.chain().focus().setTextAlign("left").run()}
-					active={editorState.isAlignLeft}
+					onClick={() => setSelectionTextAlignment(editor, "left")}
+					active={editorState.alignLeftState}
+					disabled={editorState.isTableAlignmentUnavailable}
 					title={t`Align Left`}
 				>
 					<TextAlignLeft className="h-4 w-4" aria-hidden="true" />
 				</ToolbarButton>
 				<ToolbarButton
-					onClick={() => editor.chain().focus().setTextAlign("center").run()}
-					active={editorState.isAlignCenter}
+					onClick={() => setSelectionTextAlignment(editor, "center")}
+					active={editorState.alignCenterState}
+					disabled={editorState.isTableAlignmentUnavailable}
 					title={t`Align Center`}
 				>
 					<TextAlignCenter className="h-4 w-4" aria-hidden="true" />
 				</ToolbarButton>
 				<ToolbarButton
-					onClick={() => editor.chain().focus().setTextAlign("right").run()}
-					active={editorState.isAlignRight}
+					onClick={() => setSelectionTextAlignment(editor, "right")}
+					active={editorState.alignRightState}
+					disabled={editorState.isTableAlignmentUnavailable}
 					title={t`Align Right`}
 				>
 					<TextAlignRight className="h-4 w-4" aria-hidden="true" />
@@ -4258,7 +4434,7 @@ function ToolbarSeparator() {
 
 interface ToolbarButtonProps {
 	onClick?: () => void;
-	active?: boolean;
+	active?: AlignmentButtonState;
 	disabled?: boolean;
 	title: string; // Required for accessibility
 	children: React.ReactNode;
@@ -4276,7 +4452,8 @@ function ToolbarButton({ onClick, active, disabled, title, children }: ToolbarBu
 					shape="square"
 					className={cn(
 						"h-8 w-8 flex-none hover:bg-kumo-interact/50",
-						active && "bg-kumo-interact/50 text-kumo-default",
+						active === true && "bg-kumo-interact/50 text-kumo-default",
+						active === "mixed" && "bg-kumo-tint text-kumo-default ring-1 ring-inset ring-kumo-line",
 					)}
 					onMouseDown={(e) => e.preventDefault()}
 					onClick={onClick}

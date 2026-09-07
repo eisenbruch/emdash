@@ -474,6 +474,135 @@ describe("Portable Text ↔ ProseMirror conversion", () => {
 		await vi.waitFor(() => expect(onChange).toHaveBeenCalled(), { timeout: 2000 });
 	});
 
+	it("rejects unsupported table-cell paste with localized guidance and no mutation", async () => {
+		const { screen, editor } = await renderAndGetEditor();
+		editor.chain().focus().insertTable({ rows: 1, cols: 1, withHeaderRow: false }).run();
+		const before = editor.getJSON();
+		const clipboardData = {
+			files: [],
+			items: [],
+			types: ["text/html", "text/plain"],
+			getData: (type: string) => (type === "text/html" ? '<img src="/unsupported.png">' : ""),
+		};
+		const paste = new Event("paste", { bubbles: true, cancelable: true });
+		Object.defineProperty(paste, "clipboardData", { value: clipboardData });
+
+		editor.view.dom.dispatchEvent(paste);
+
+		const alert = screen.getByRole("alert");
+		await expect
+			.element(alert)
+			.toHaveTextContent("Table cells accept text, links, and formatting only.");
+		expect(editor.getJSON()).toEqual(before);
+	});
+
+	it("reports an image inside pasted table HTML as unsupported cell content", async () => {
+		const { screen, editor } = await renderAndGetEditor();
+		editor.chain().focus().insertTable({ rows: 1, cols: 1, withHeaderRow: false }).run();
+		const before = editor.getJSON();
+		const clipboardData = {
+			files: [],
+			items: [],
+			types: ["text/html", "text/plain"],
+			getData: (type: string) =>
+				type === "text/html"
+					? '<table><tbody><tr><td><img src="/unsupported.png"></td></tr></tbody></table>'
+					: "",
+		};
+		const paste = new Event("paste", { bubbles: true, cancelable: true });
+		Object.defineProperty(paste, "clipboardData", { value: clipboardData });
+
+		editor.view.dom.dispatchEvent(paste);
+
+		await expect
+			.element(screen.getByRole("alert"))
+			.toHaveTextContent("Table cells accept text, links, and formatting only.");
+		expect(editor.getJSON()).toEqual(before);
+	});
+
+	it("distinguishes oversized table paste from unsupported cell content", async () => {
+		const { screen, editor } = await renderAndGetEditor();
+		editor.chain().focus().insertTable({ rows: 1, cols: 1, withHeaderRow: false }).run();
+		const before = editor.getJSON();
+		const html = `<table><tbody><tr>${"<td>Cell</td>".repeat(101)}</tr></tbody></table>`;
+		const clipboardData = {
+			files: [],
+			items: [],
+			types: ["text/html", "text/plain"],
+			getData: (type: string) => (type === "text/html" ? html : ""),
+		};
+		const paste = new Event("paste", { bubbles: true, cancelable: true });
+		Object.defineProperty(paste, "clipboardData", { value: clipboardData });
+
+		editor.view.dom.dispatchEvent(paste);
+
+		await expect
+			.element(screen.getByRole("alert"))
+			.toHaveTextContent("This paste is too large. Paste fewer cells or less text at a time.");
+		expect(editor.getJSON()).toEqual(before);
+	});
+
+	it("gives distinct guidance for malformed table geometry", async () => {
+		const { screen, editor } = await renderAndGetEditor();
+		editor.chain().focus().insertTable({ rows: 1, cols: 1, withHeaderRow: false }).run();
+		const before = editor.getJSON();
+		const clipboardData = {
+			files: [],
+			items: [],
+			types: ["text/html", "text/plain"],
+			getData: (type: string) =>
+				type === "text/html" ? '<table><tr><td colspan="101">Cell</td></tr></table>' : "",
+		};
+		const paste = new Event("paste", { bubbles: true, cancelable: true });
+		Object.defineProperty(paste, "clipboardData", { value: clipboardData });
+
+		editor.view.dom.dispatchEvent(paste);
+
+		await expect
+			.element(screen.getByRole("alert"))
+			.toHaveTextContent(
+				"This table has unsupported cell formatting, merged cells, or column widths. Paste it as plain text or simplify the table and try again.",
+			);
+		expect(editor.getJSON()).toEqual(before);
+	});
+
+	it("explains that tables cannot be pasted inside lists or quotes", async () => {
+		const { screen, editor } = await renderAndGetEditor();
+		const before = editor.getJSON();
+		const clipboardData = {
+			files: [],
+			items: [],
+			types: ["text/html", "text/plain"],
+			getData: (type: string) =>
+				type === "text/html"
+					? "<blockquote><table><tbody><tr><td>Cell</td></tr></tbody></table></blockquote>"
+					: "",
+		};
+		const paste = new Event("paste", { bubbles: true, cancelable: true });
+		Object.defineProperty(paste, "clipboardData", { value: clipboardData });
+
+		editor.view.dom.dispatchEvent(paste);
+
+		await expect
+			.element(screen.getByRole("alert"))
+			.toHaveTextContent(
+				"Tables cannot be pasted inside lists or quotes. Paste the table into its own paragraph and try again.",
+			);
+		expect(editor.getJSON()).toEqual(before);
+	});
+
+	it("does not open block slash commands inside a table cell", async () => {
+		const { editor } = await renderAndGetEditor();
+		editor.chain().focus().insertTable({ rows: 1, cols: 1, withHeaderRow: false }).run();
+		editor.commands.insertContent("/");
+
+		await new Promise((resolve) => setTimeout(resolve, 50));
+
+		expect(document.querySelector("[data-slash-command-menu]")).toBeNull();
+		expect(editor.isActive("table")).toBe(true);
+		expect(editor.getText()).toContain("/");
+	});
+
 	it("renders a paragraph from PT value", async () => {
 		await render(<PortableTextEditor value={[textBlock("Hello world")]} />);
 		const pm = await waitForEditor();

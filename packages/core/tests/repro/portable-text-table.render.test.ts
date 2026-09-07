@@ -93,6 +93,31 @@ describe("Portable Text table rendering", () => {
 		expect(html).toMatch(/<a\b[^>]*href="\/docs"[^>]*>Docs<\/a>/);
 	});
 
+	it("renders valid sub-minimum preferences at the responsive visual minimum", async () => {
+		const html = await render([
+			{
+				_type: "table",
+				_key: "narrow-table",
+				rows: [
+					{
+						_type: "tableRow",
+						_key: "narrow-row",
+						cells: Array.from({ length: 10 }, (_, index) => ({
+							_type: "tableCell",
+							_key: `narrow-${index}`,
+							colwidth: [1],
+							content: [{ _type: "span", _key: `span-${index}`, text: String(index) }],
+						})),
+					},
+				],
+			},
+		]);
+
+		expect(tags(html, "table").some((tag) => /min-width:\s*960px/.test(tag))).toBe(true);
+		expect(tags(html, "col")).toHaveLength(10);
+		expect(tags(html, "col").every((tag) => /width:\s*96px/.test(tag))).toBe(true);
+	});
+
 	it("renders legacy string cells as escaped text with legacy header-row semantics", async () => {
 		const html = await render([
 			{
