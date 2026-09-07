@@ -500,7 +500,23 @@ div:has(> [role="listbox"] > .emdash-compact-select-option) {
 	}
 }
 
+[data-emdash-header-checkbox] {
+	padding-inline: 0.5rem !important;
+	padding-inline-start: 2rem !important;
+}
+
+[data-emdash-header-checkbox] > span:first-child {
+	inset-inline-start: 0.5rem !important;
+	inset-inline-end: auto !important;
+	left: auto !important;
+}
+
 @media (forced-colors: active) {
+	[role="gridcell"][aria-selected="true"] {
+		outline: 2px solid Highlight;
+		outline-offset: -2px;
+	}
+
 	.ProseMirror .selectedCell,
 	.ProseMirror :is(td, th).has-focus:not(.selectedCell) {
 		outline: 2px solid Highlight;

@@ -8,7 +8,7 @@ import {
 	EmDashTableHeader,
 	EmDashTableRow,
 } from "../../src/components/editor/TableExtensions";
-import { ResponsiveTableView, TableResize } from "../../src/components/editor/TableResize";
+import { createTableResize, ResponsiveTableView } from "../../src/components/editor/TableResize";
 import { TABLE_CELL_MIN_WIDTH } from "../../src/portable-text-table";
 
 import "../../src/styles.css";
@@ -104,7 +104,7 @@ function mixedWidthSpanContent(): JSONContent {
 
 function createEditor(
 	direction: "ltr" | "rtl",
-	options: { content?: JSONContent; editable?: boolean } = {},
+	options: { content?: JSONContent; editable?: boolean; onResized?: () => void } = {},
 ) {
 	const host = document.createElement("div");
 	host.dir = direction;
@@ -121,7 +121,7 @@ function createEditor(
 			EmDashTableRow,
 			EmDashTableHeader,
 			EmDashTableCell,
-			TableResize,
+			createTableResize(options.onResized),
 		],
 		content: options.content ?? tableContent(),
 	});
@@ -239,6 +239,16 @@ describe("direction-aware table resizing", () => {
 		expect(tableColumnWidths(editor, 0)).toEqual([128, 128]);
 		expect(editor.commands.redo()).toBe(true);
 		expect(tableColumnWidths(editor, 0)).toEqual([160, 160]);
+	});
+
+	it("announces only a committed non-zero resize", () => {
+		const onResized = vi.fn();
+		const { host } = createEditor("ltr", { onResized });
+		const cell = host.querySelector<HTMLTableCellElement>("td")!;
+		resizeColumn(cell, "ltr", 0);
+		expect(onResized).not.toHaveBeenCalled();
+		resizeColumn(cell, "ltr", 16);
+		expect(onResized).toHaveBeenCalledOnce();
 	});
 
 	it("keeps persisted widths within the portable table contract", () => {

@@ -13,6 +13,7 @@ const MARKS = new Set("bold italic underline strike subscript superscript code l
 export type TablePasteRejection =
 	| "unsupported-content"
 	| "invalid-table"
+	| "invalid-tsv"
 	| "too-large"
 	| "table-must-be-top-level";
 
@@ -300,7 +301,7 @@ export function createTableCellSafety(onRejected: (reason: TablePasteRejection) 
 				new Plugin({
 					key: new PluginKey("tableCellSafety"),
 					props: {
-						handlePaste: (view, _event, slice) => {
+						handlePaste: (view, event, slice) => {
 							const inTable = selectionIsContainedInTableCells(view.state);
 							const tableSafety = tableSafetyInSlice(slice);
 							if (tableSafety.rejection) {
@@ -337,6 +338,12 @@ export function createTableCellSafety(onRejected: (reason: TablePasteRejection) 
 							if (!content?.length) {
 								onRejected("unsupported-content");
 								return true;
+							}
+							if (
+								event.clipboardData?.getData("text/plain").includes("\t") ||
+								[...(event.clipboardData?.types ?? [])].includes("text/tab-separated-values")
+							) {
+								return false;
 							}
 							if (view.state.selection instanceof CellSelection) {
 								const paragraph = view.state.schema.nodes.paragraph!.create(null, content);

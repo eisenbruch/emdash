@@ -79,11 +79,7 @@ import {
 	Table as TableIcon,
 	Plus,
 	Trash,
-	Rows,
 	RowsPlusBottom,
-	RowsPlusTop,
-	Columns,
-	ColumnsPlusLeft,
 	ColumnsPlusRight,
 	DotsSixVertical,
 	CaretDown,
@@ -142,7 +138,17 @@ import {
 	registerPluginBlocks,
 	resolveIcon,
 } from "./editor/PluginBlockNode";
+import { runTableAction } from "./editor/TableActions.js";
 import { createTableCellSafety, type TablePasteRejection } from "./editor/TableCellSafety.js";
+import { createTableClipboard } from "./editor/TableClipboard.js";
+import {
+	TableMoreMenu,
+	TableSelectionAnnouncer,
+	TableSizePicker,
+	TableToolbarControl,
+	insertTable as insertEditorTable,
+	useTableControls,
+} from "./editor/TableControls.js";
 import {
 	EmDashTable,
 	EmDashTableCell,
@@ -152,7 +158,7 @@ import {
 	selectionIsContainedInTableCells,
 	selectionTouchesTable,
 } from "./editor/TableExtensions.js";
-import { TableResize } from "./editor/TableResize.js";
+import { createTableResize } from "./editor/TableResize.js";
 import { MediaPickerModal } from "./MediaPickerModal";
 import { SectionPickerModal } from "./SectionPickerModal";
 
@@ -1290,6 +1296,7 @@ interface SlashCommandItem {
 	command: (props: { editor: Editor; range: Range }) => void;
 	/** Delay document insertion until a modal-backed command returns a selection. */
 	deferInsertion?: boolean;
+	opensTablePicker?: boolean;
 	aliases?: string[];
 	/**
 	 * Display category. Built-in commands use `msg`-tagged descriptors;
@@ -1433,14 +1440,8 @@ const defaultSlashCommands: SlashCommandItem[] = [
 		description: msg`Insert a table`,
 		icon: TableIcon,
 		aliases: ["grid", "spreadsheet"],
-		command: ({ editor, range }) => {
-			editor
-				.chain()
-				.focus()
-				.deleteRange(range)
-				.insertTable({ rows: 3, cols: 3, withHeaderRow: true })
-				.run();
-		},
+		opensTablePicker: true,
+		command: () => undefined,
 	},
 ];
 
@@ -1449,6 +1450,7 @@ const defaultSlashCommands: SlashCommandItem[] = [
  */
 interface SlashMenuState {
 	isOpen: boolean;
+	mode: "commands" | "table-size";
 	items: SlashCommandItem[];
 	selectedIndex: number;
 	clientRect: (() => DOMRect | null) | null;
@@ -1467,6 +1469,13 @@ function createSlashCommandsExtension(options: {
 	getState: () => SlashMenuState;
 }) {
 	const { filterCommands, onStateChange, getState } = options;
+	const execute = (item: SlashCommandItem, editor: Editor, range: Range) => {
+		if (item.opensTablePicker) {
+			onStateChange((state) => ({ ...state, isOpen: true, mode: "table-size", range }));
+			return;
+		}
+		item.command({ editor, range });
+	};
 
 	return Extension.create({
 		name: "slashCommands",
@@ -1487,7 +1496,7 @@ function createSlashCommandsExtension(options: {
 					startOfLine: true,
 					command: ({ editor, range, props }) => {
 						const item = props as SlashCommandItem;
-						item.command({ editor, range });
+						execute(item, editor, range);
 					},
 					items: ({ query }) => filterCommands(query),
 					allow: ({ range }) =>
@@ -1497,6 +1506,7 @@ function createSlashCommandsExtension(options: {
 							onStart: (props) => {
 								onStateChange({
 									isOpen: true,
+									mode: "commands",
 									items: props.items,
 									selectedIndex: 0,
 									clientRect: props.clientRect ?? null,
@@ -1550,8 +1560,10 @@ function createSlashCommandsExtension(options: {
 									if (state.items.length > 0 && state.range) {
 										const item = state.items[state.selectedIndex];
 										if (item) {
-											item.command({ editor: this.editor, range: state.range });
-											onStateChange((prev) => ({ ...prev, isOpen: false }));
+											execute(item, this.editor, state.range);
+											if (!item.opensTablePicker) {
+												onStateChange((prev) => ({ ...prev, isOpen: false }));
+											}
 											return true;
 										}
 									}
@@ -1576,11 +1588,15 @@ function SlashCommandMenu({
 	state,
 	onCommand,
 	onClose,
+	onTableInsert,
+	onTableCancel,
 	setSelectedIndex,
 }: {
 	state: SlashMenuState;
 	onCommand: (item: SlashCommandItem) => void;
 	onClose: () => void;
+	onTableInsert: (rows: number, columns: number, withHeaderRow: boolean) => void;
+	onTableCancel: () => void;
 	setSelectedIndex: (index: number) => void;
 }) {
 	const { t } = useLingui();
@@ -1679,58 +1695,64 @@ function SlashCommandMenu({
 							hasMouseMovedRef.current = true;
 						}}
 					>
-						{selectedItem && (
-							<span className="sr-only" role="status">
-								{t`Selected ${selectedItemTitle}`}
-							</span>
+						{state.mode === "table-size" ? (
+							<TableSizePicker onInsert={onTableInsert} onCancel={onTableCancel} />
+						) : (
+							<>
+								{selectedItem && (
+									<span className="sr-only" role="status">
+										{t`Selected ${selectedItemTitle}`}
+									</span>
+								)}
+								<div
+									ref={containerRef}
+									data-slash-menu-scroll-viewport
+									className="max-h-[300px] overflow-y-auto overscroll-contain scroll-py-1 p-1"
+								>
+									{state.items.length === 0 ? (
+										<p className="px-3 py-2 text-sm text-kumo-subtle">{t`No results`}</p>
+									) : (
+										state.items.map((item, index) => (
+											<button
+												key={item.id}
+												type="button"
+												tabIndex={-1}
+												data-index={index}
+												aria-current={index === state.selectedIndex ? "true" : undefined}
+												className={cn(
+													"flex w-full items-center gap-3 rounded px-3 py-2 text-start text-sm",
+													index === state.selectedIndex
+														? "bg-kumo-interact text-kumo-default"
+														: "hover:bg-kumo-interact",
+												)}
+												onPointerDown={(event) => event.preventDefault()}
+												onClick={() => onCommand(item)}
+												onMouseEnter={() => {
+													// Only react if the user has actually moved the
+													// mouse since the menu opened -- not when items
+													// appear under a stationary pointer.
+													if (hasMouseMovedRef.current) {
+														setSelectedIndex(index);
+													}
+												}}
+											>
+												<item.icon className="h-4 w-4 flex-shrink-0 text-kumo-subtle" />
+												<div className="flex flex-col">
+													<span className="font-medium">
+														{typeof item.title === "string" ? item.title : t(item.title)}
+													</span>
+													<span className="text-xs text-kumo-subtle">
+														{typeof item.description === "string"
+															? item.description
+															: t(item.description)}
+													</span>
+												</div>
+											</button>
+										))
+									)}
+								</div>
+							</>
 						)}
-						<div
-							ref={containerRef}
-							data-slash-menu-scroll-viewport
-							className="max-h-[300px] overflow-y-auto overscroll-contain scroll-py-1 p-1"
-						>
-							{state.items.length === 0 ? (
-								<p className="px-3 py-2 text-sm text-kumo-subtle">{t`No results`}</p>
-							) : (
-								state.items.map((item, index) => (
-									<button
-										key={item.id}
-										type="button"
-										tabIndex={-1}
-										data-index={index}
-										aria-current={index === state.selectedIndex ? "true" : undefined}
-										className={cn(
-											"flex w-full items-center gap-3 rounded px-3 py-2 text-start text-sm",
-											index === state.selectedIndex
-												? "bg-kumo-interact text-kumo-default"
-												: "hover:bg-kumo-interact",
-										)}
-										onPointerDown={(event) => event.preventDefault()}
-										onClick={() => onCommand(item)}
-										onMouseEnter={() => {
-											// Only react if the user has actually moved the
-											// mouse since the menu opened -- not when items
-											// appear under a stationary pointer.
-											if (hasMouseMovedRef.current) {
-												setSelectedIndex(index);
-											}
-										}}
-									>
-										<item.icon className="h-4 w-4 flex-shrink-0 text-kumo-subtle" />
-										<div className="flex flex-col">
-											<span className="font-medium">
-												{typeof item.title === "string" ? item.title : t(item.title)}
-											</span>
-											<span className="text-xs text-kumo-subtle">
-												{typeof item.description === "string"
-													? item.description
-													: t(item.description)}
-											</span>
-										</div>
-									</button>
-								))
-							)}
-						</div>
 					</PopoverPrimitive.Popup>
 				</PopoverPrimitive.Positioner>
 			</PopoverPrimitive.Portal>
@@ -2568,6 +2590,24 @@ export function PortableTextEditor({
 		id: number;
 		reason: TablePasteRejection;
 	} | null>(null);
+	const [tableAnnouncement, setTableAnnouncement] = React.useState<{
+		id: number;
+		text: string;
+	} | null>(null);
+	const announceTable = React.useCallback((text: string) => {
+		setTableAnnouncement((current) => ({ id: (current?.id ?? 0) + 1, text }));
+	}, []);
+	const rejectTablePaste = React.useCallback((reason: TablePasteRejection) => {
+		tablePasteErrorIdRef.current++;
+		setTablePasteError({ id: tablePasteErrorIdRef.current, reason });
+	}, []);
+	const extensionAnnouncementRef = React.useRef<(rows?: number, columns?: number) => void>(
+		() => {},
+	);
+	extensionAnnouncementRef.current = (rows, columns) =>
+		announceTable(
+			rows === undefined ? t`Column width resized` : t`${rows} × ${columns} table pasted`,
+		);
 
 	// Plugin block insertion/editing state
 	const [pluginBlockModal, setPluginBlockModal] = React.useState<PluginBlockDef | null>(null);
@@ -2588,6 +2628,7 @@ export function PortableTextEditor({
 	// Slash commands state
 	const [slashMenuState, setSlashMenuStateRaw] = React.useState<SlashMenuState>({
 		isOpen: false,
+		mode: "commands",
 		items: [],
 		selectedIndex: 0,
 		clientRect: null,
@@ -2792,16 +2833,16 @@ export function PortableTextEditor({
 				cellMinWidth: TABLE_CELL_MIN_WIDTH,
 				resizable: false,
 			}),
-			TableResize,
+			createTableResize(() => extensionAnnouncementRef.current()),
 			EmDashTableRow,
 			EmDashTableHeader,
 			EmDashTableCell,
 			TableIdentity,
 			TableSafetyShortcuts,
-			createTableCellSafety((reason) => {
-				tablePasteErrorIdRef.current++;
-				setTablePasteError({ id: tablePasteErrorIdRef.current, reason });
-			}),
+			createTableCellSafety(rejectTablePaste),
+			createTableClipboard(rejectTablePaste, (rows, columns) =>
+				extensionAnnouncementRef.current(rows, columns),
+			),
 			Placeholder.configure({
 				includeChildren: true,
 				placeholder: () => placeholderRef.current,
@@ -2881,6 +2922,7 @@ export function PortableTextEditor({
 
 			setSlashMenuState((prev) => ({
 				isOpen: true,
+				mode: "commands",
 				items: filterCommandsRef.current(""),
 				selectedIndex: 0,
 				clientRect: () => {
@@ -2909,6 +2951,7 @@ export function PortableTextEditor({
 		setSlashMenuState((prev) => ({
 			...prev,
 			isOpen: false,
+			mode: "commands",
 			gutterBlockPos: null,
 			dismissedSlashFrom:
 				state.trigger === "slash" ? (state.range?.from ?? null) : prev.dismissedSlashFrom,
@@ -2921,6 +2964,10 @@ export function PortableTextEditor({
 	const executeSlashCommand = React.useCallback(
 		(item: SlashCommandItem, state: SlashMenuState) => {
 			if (!editor || !state.range) return;
+			if (item.opensTablePicker) {
+				setSlashMenuState((current) => ({ ...current, mode: "table-size", isOpen: true }));
+				return;
+			}
 
 			let range = state.range;
 			if (state.trigger === "gutter") {
@@ -2945,7 +2992,12 @@ export function PortableTextEditor({
 			}
 
 			item.command({ editor, range });
-			setSlashMenuState((prev) => ({ ...prev, isOpen: false, gutterBlockPos: null }));
+			setSlashMenuState((prev) => ({
+				...prev,
+				isOpen: false,
+				mode: "commands",
+				gutterBlockPos: null,
+			}));
 		},
 		[editor, setSlashMenuState],
 	);
@@ -3246,6 +3298,58 @@ export function PortableTextEditor({
 		},
 		[executeSlashCommand],
 	);
+	React.useEffect(() => {
+		if (editable || !editor || slashMenuStateRef.current.mode !== "table-size") return;
+		exitSuggestion(editor.view);
+		queueMicrotask(() =>
+			setSlashMenuState((current) => ({
+				...current,
+				isOpen: false,
+				mode: "commands",
+				gutterBlockPos: null,
+			})),
+		);
+	}, [editable, editor, setSlashMenuState]);
+	const handleSlashTableInsert = React.useCallback(
+		(rows: number, columns: number, withHeaderRow: boolean) => {
+			if (!editor?.isEditable) return;
+			const state = slashMenuStateRef.current;
+			const inserted = insertEditorTable(
+				editor,
+				rows,
+				columns,
+				withHeaderRow,
+				state.trigger === "slash" ? (state.range ?? undefined) : undefined,
+				state.trigger === "gutter" ? (state.gutterBlockPos ?? undefined) : undefined,
+			);
+			if (!inserted) return;
+			if (state.trigger === "slash") exitSuggestion(editor.view);
+			setSlashMenuState((current) => ({
+				...current,
+				isOpen: false,
+				mode: "commands",
+				gutterBlockPos: null,
+				dismissedSlashFrom: null,
+			}));
+			announceTable(t`Table inserted`);
+		},
+		[announceTable, editor, setSlashMenuState, t],
+	);
+	const handleSlashTableCancel = React.useCallback(() => {
+		const state = slashMenuStateRef.current;
+		setSlashMenuState((current) => ({
+			...current,
+			isOpen: false,
+			mode: "commands",
+			gutterBlockPos: null,
+			dismissedSlashFrom:
+				state.trigger === "slash" ? (state.range?.from ?? null) : current.dismissedSlashFrom,
+		}));
+		if (editor) {
+			if (state.trigger === "slash") exitSuggestion(editor.view);
+			editor.view.focus();
+		}
+	}, [editor, setSlashMenuState]);
 
 	// Handle section selection - insert section content at cursor
 	const handleSectionSelect = React.useCallback(
@@ -3338,14 +3442,19 @@ export function PortableTextEditor({
 	const tablePasteErrorMessage =
 		tablePasteError?.reason === "too-large"
 			? t`This paste is too large. Paste fewer cells or less text at a time.`
-			: tablePasteError?.reason === "table-must-be-top-level"
-				? t`Tables cannot be pasted inside lists or quotes. Paste the table into its own paragraph and try again.`
-				: tablePasteError?.reason === "invalid-table"
-					? t`This table has unsupported cell formatting, merged cells, or column widths. Paste it as plain text or simplify the table and try again.`
-					: t`Table cells accept text, links, and formatting only.`;
+			: tablePasteError?.reason === "invalid-tsv"
+				? t`This spreadsheet data has invalid quoted cells. Fix the quotes or remove the tab separators and try again.`
+				: tablePasteError?.reason === "table-must-be-top-level"
+					? t`Tables cannot be pasted inside lists or quotes. Paste the table into its own paragraph and try again.`
+					: tablePasteError?.reason === "invalid-table"
+						? t`This table has unsupported cell formatting, merged cells, or column widths. Paste it as plain text or simplify the table and try again.`
+						: t`Table cells accept text, links, and formatting only.`;
 
 	return (
 		<div ref={floatingRootRef} className="relative min-w-0" data-emdash-editor-floating-root>
+			<div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+				{tableAnnouncement && <span key={tableAnnouncement.id}>{tableAnnouncement.text}</span>}
+			</div>
 			{tablePasteError && (
 				<div
 					key={tablePasteError.id}
@@ -3402,11 +3511,16 @@ export function PortableTextEditor({
 				appendTo={appendBubbleMenu}
 				getCollisionOptions={getBubbleMenuCollisionOptions}
 			/>
-			<TableBubbleMenu
-				editor={editor}
-				appendTo={appendBubbleMenu}
-				getCollisionOptions={getBubbleMenuCollisionOptions}
-			/>
+			{!minimal && (
+				<TableBubbleMenu
+					editor={editor}
+					editable={editable}
+					appendTo={appendBubbleMenu}
+					getCollisionOptions={getBubbleMenuCollisionOptions}
+					onRun={announceTable}
+				/>
+			)}
+			<TableSelectionAnnouncer editor={editor} onChange={announceTable} />
 			<div
 				className={cn(
 					"border rounded-lg overflow-clip",
@@ -3422,10 +3536,12 @@ export function PortableTextEditor({
 					<EditorToolbar
 						toolbarRef={toolbarRef}
 						editor={editor}
+						editable={editable}
 						focusMode={focusMode}
 						onFocusModeChange={setFocusMode}
 						onInsertBlock={handleTouchInsertBlock}
 						onInsertImage={openToolbarImagePicker}
+						onTableAction={announceTable}
 					/>
 				)}
 				<div className="relative overflow-visible">
@@ -3435,14 +3551,18 @@ export function PortableTextEditor({
 				{!minimal && <EditorFooter editor={editor} />}
 
 				{/* Slash command menu */}
-				<SlashCommandMenu
-					state={slashMenuState}
-					onCommand={handleSlashCommand}
-					onClose={closeSlashMenu}
-					setSelectedIndex={(index) =>
-						setSlashMenuState((prev) => ({ ...prev, selectedIndex: index }))
-					}
-				/>
+				{editable && (
+					<SlashCommandMenu
+						state={slashMenuState}
+						onCommand={handleSlashCommand}
+						onClose={closeSlashMenu}
+						onTableInsert={handleSlashTableInsert}
+						onTableCancel={handleSlashTableCancel}
+						setSelectedIndex={(index) =>
+							setSlashMenuState((prev) => ({ ...prev, selectedIndex: index }))
+						}
+					/>
+				)}
 
 				{/* Media picker for image insertion */}
 				<MediaPickerModal
@@ -3705,18 +3825,22 @@ function EditorBubbleMenu({
  */
 function TableBubbleMenu({
 	editor,
+	editable,
 	appendTo,
 	getCollisionOptions,
+	onRun,
 }: {
 	editor: Editor;
+	editable: boolean;
 	appendTo: () => HTMLElement;
 	getCollisionOptions: BubbleMenuCollisionOptions;
+	onRun: (label: string) => void;
 }) {
 	const { t } = useLingui();
-	const isHeaderRow = useEditorState({
-		editor,
-		selector: ({ editor: activeEditor }) => activeEditor.isActive("tableHeader"),
-	});
+	const controls = useTableControls(editor);
+	const run = (id: "add-row-after" | "add-column-after", label: string) => {
+		if (runTableAction(editor, id)) onRun(label);
+	};
 
 	return (
 		<BubbleMenu
@@ -3750,60 +3874,28 @@ function TableBubbleMenu({
 			data-emdash-table-bubble-menu
 			role="group"
 			aria-label={t`Table controls`}
-			className="z-[100] flex items-center gap-0.5 rounded-lg border bg-kumo-base p-1 shadow-lg"
+			className="z-[100] flex items-center gap-0.5 rounded-lg bg-kumo-base p-1 shadow-lg ring ring-kumo-line"
 		>
+			{controls && (controls.rows > 1 || controls.columns > 1) && (
+				<span className="px-2 text-xs text-kumo-subtle">
+					{t`${plural(controls.rows, { one: "# row", other: "# rows" })} × ${plural(controls.columns, { one: "# column", other: "# columns" })} selected`}
+				</span>
+			)}
 			<BubbleButton
-				onClick={() => editor.chain().focus().addColumnBefore().run()}
-				title={t`Add column before`}
+				onClick={() => run("add-row-after", t`Row added below`)}
+				disabled={!controls?.can["add-row-after"]}
+				title={t`Add row below`}
 			>
-				<ColumnsPlusLeft className="h-4 w-4 rtl:-scale-x-100" aria-hidden="true" />
+				<RowsPlusBottom className="h-4 w-4" aria-hidden="true" />
 			</BubbleButton>
 			<BubbleButton
-				onClick={() => editor.chain().focus().addColumnAfter().run()}
+				onClick={() => run("add-column-after", t`Column added after`)}
+				disabled={!controls?.can["add-column-after"]}
 				title={t`Add column after`}
 			>
 				<ColumnsPlusRight className="h-4 w-4 rtl:-scale-x-100" aria-hidden="true" />
 			</BubbleButton>
-			<BubbleButton
-				onClick={() => editor.chain().focus().deleteColumn().run()}
-				title={t`Delete column`}
-			>
-				<Columns className="h-4 w-4 text-kumo-danger" aria-hidden="true" />
-			</BubbleButton>
-
-			<div className="mx-1 h-6 w-px bg-kumo-line" aria-hidden="true" />
-
-			<BubbleButton
-				onClick={() => editor.chain().focus().addRowBefore().run()}
-				title={t`Add row before`}
-			>
-				<RowsPlusTop className="h-4 w-4" aria-hidden="true" />
-			</BubbleButton>
-			<BubbleButton
-				onClick={() => editor.chain().focus().addRowAfter().run()}
-				title={t`Add row after`}
-			>
-				<RowsPlusBottom className="h-4 w-4" aria-hidden="true" />
-			</BubbleButton>
-			<BubbleButton onClick={() => editor.chain().focus().deleteRow().run()} title={t`Delete row`}>
-				<Rows className="h-4 w-4 text-kumo-danger" aria-hidden="true" />
-			</BubbleButton>
-
-			<div className="mx-1 h-6 w-px bg-kumo-line" aria-hidden="true" />
-
-			<BubbleButton
-				onClick={() => editor.chain().focus().toggleHeaderRow().run()}
-				active={isHeaderRow}
-				title={t`Toggle header row`}
-			>
-				<TableIcon className="h-4 w-4" aria-hidden="true" />
-			</BubbleButton>
-			<BubbleButton
-				onClick={() => editor.chain().focus().deleteTable().run()}
-				title={t`Delete table`}
-			>
-				<Trash className="h-4 w-4 text-kumo-danger" aria-hidden="true" />
-			</BubbleButton>
+			<TableMoreMenu editor={editor} editable={editable} onRun={onRun} />
 		</BubbleMenu>
 	);
 }
@@ -3811,11 +3903,13 @@ function TableBubbleMenu({
 function BubbleButton({
 	onClick,
 	active,
+	disabled,
 	title,
 	children,
 }: {
 	onClick: () => void;
 	active?: boolean;
+	disabled?: boolean;
 	title: string;
 	children: React.ReactNode;
 }) {
@@ -3824,8 +3918,12 @@ function BubbleButton({
 			type="button"
 			variant="ghost"
 			shape="square"
-			className={cn("h-8 w-8", active && "bg-kumo-tint text-kumo-default")}
+			className={cn(
+				"h-8 w-8 pointer-coarse:h-11 pointer-coarse:w-11",
+				active && "bg-kumo-tint text-kumo-default",
+			)}
 			onClick={onClick}
+			disabled={disabled}
 			title={title}
 			aria-label={title}
 			aria-pressed={active === undefined ? undefined : active}
@@ -3998,17 +4096,21 @@ const TableSafetyShortcuts = Extension.create({
 function EditorToolbar({
 	toolbarRef,
 	editor,
+	editable,
 	focusMode,
 	onFocusModeChange,
 	onInsertBlock,
 	onInsertImage,
+	onTableAction,
 }: {
 	toolbarRef: React.RefObject<HTMLDivElement | null>;
 	editor: Editor;
+	editable: boolean;
 	focusMode: FocusMode;
 	onFocusModeChange: (mode: FocusMode) => void;
 	onInsertBlock: () => void;
 	onInsertImage: () => void;
+	onTableAction: (label: string) => void;
 }) {
 	const { t } = useLingui();
 	const [showLinkPopover, setShowLinkPopover] = React.useState(false);
@@ -4269,6 +4371,11 @@ function EditorToolbar({
 				>
 					<BracketsAngle className="h-4 w-4" aria-hidden="true" />
 				</ToolbarButton>
+			</ToolbarGroup>
+
+			<ToolbarSeparator />
+			<ToolbarGroup>
+				<TableToolbarControl editor={editor} editable={editable} onRun={onTableAction} />
 			</ToolbarGroup>
 
 			<ToolbarSeparator />

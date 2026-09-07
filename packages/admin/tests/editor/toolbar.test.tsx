@@ -1,6 +1,6 @@
 import type { Editor } from "@tiptap/core";
 import { AllSelection, NodeSelection, TextSelection } from "@tiptap/pm/state";
-import { CellSelection } from "@tiptap/pm/tables";
+import { CellSelection, TableMap } from "@tiptap/pm/tables";
 import { describe, it, expect, vi } from "vitest";
 import { userEvent } from "vitest/browser";
 
@@ -338,14 +338,266 @@ describe("Toolbar Presence and Structure", () => {
 		await expect.element(screen.getByRole("button", { name: "Align Right" })).toBeVisible();
 	});
 
-	it("exposes core block insertions and keeps extended actions in the block menu", async () => {
+	it("exposes the permanent Table control and keeps other extended actions in the block menu", async () => {
 		const { screen } = await renderEditor();
 		const toolbar = screen.getByRole("toolbar", { name: "Text formatting" }).element();
 		await expect.element(screen.getByRole("button", { name: "Insert Link" })).toBeVisible();
 		await expect.element(screen.getByRole("button", { name: "Insert Image" })).toBeVisible();
 		await expect.element(screen.getByRole("button", { name: "Insert HTML" })).toBeVisible();
-		expect(toolbar.querySelector('[aria-label="Insert Table"]')).toBeNull();
+		const table = screen.getByRole("button", { name: "Table" });
+		await expect.element(table).toBeVisible();
+		await expect.element(table).toHaveAttribute("aria-keyshortcuts", "Alt+F10");
+		await userEvent.click(table);
+		await expect.element(table).toHaveAttribute("aria-expanded", "true");
+		const insert = screen.getByRole("menuitem", { name: "Insert table" });
+		await expect.element(insert).toBeVisible();
+		insert.element().click();
+		await expect.element(screen.getByRole("grid", { name: "Table size" })).toBeVisible();
+		await expect.element(table).toHaveAttribute("aria-expanded", "false");
 		expect(toolbar.querySelector('[aria-label="Insert Horizontal Rule"]')).toBeNull();
+	});
+
+	it("shows the complete grouped Table menu inside a table", async () => {
+		const { screen, editor } = await renderEditor();
+		editor.chain().focus().insertTable({ rows: 2, cols: 2, withHeaderRow: false }).run();
+		getToolbarButton(screen, "Table").element().click();
+		const menuLocator = screen.getByRole("menu");
+		await expect.element(menuLocator).toBeVisible();
+		const menu = menuLocator.element();
+
+		for (const group of [
+			"Selection",
+			"Rows",
+			"Columns",
+			"Headers",
+			"Cells",
+			"Widths",
+			"Document",
+			"Table",
+		]) {
+			expect(menu.textContent).toContain(group);
+		}
+		const items = Array.from(
+			menu.querySelectorAll<HTMLElement>('[role="menuitem"], [role="menuitemcheckbox"]'),
+			(item) => item.textContent?.trim(),
+		);
+		expect(items).toEqual([
+			"Select row",
+			"Select column",
+			"Select table",
+			"Add row above",
+			"Add row below",
+			"Delete row",
+			"Add column before",
+			"Add column after",
+			"Delete column",
+			"Toggle header row",
+			"Toggle header column",
+			"Merge selected cells",
+			"Split merged cell",
+			"Decrease column width",
+			"Increase column width",
+			"Distribute columns evenly",
+			"Reset column widths",
+			"Insert paragraph before",
+			"Insert paragraph after",
+			"Delete table",
+		]);
+	});
+
+	it("focuses the permanent Table trigger with Alt+F10 without changing selection", async () => {
+		const { screen, editor } = await renderEditor();
+		editor.chain().focus().insertTable({ rows: 2, cols: 2, withHeaderRow: false }).run();
+		editor.view.focus();
+		await vi.waitFor(() => expect(document.activeElement).toBe(editor.view.dom));
+		const before = editor.state.selection.toJSON();
+
+		await userEvent.keyboard("{Alt>}{F10}{/Alt}");
+
+		await vi.waitFor(() => expect(getToolbarButton(screen, "Table").element()).toHaveFocus());
+		expect(editor.state.selection.toJSON()).toEqual(before);
+	});
+
+	it("returns from the closed Alt+F10 Table trigger with Escape", async () => {
+		const { screen, editor } = await renderEditor();
+		editor.chain().focus().insertTable({ rows: 2, cols: 2, withHeaderRow: false }).run();
+		const before = editor.state.selection.toJSON();
+		await userEvent.keyboard("{Alt>}{F10}{/Alt}");
+		await vi.waitFor(() => expect(getToolbarButton(screen, "Table").element()).toHaveFocus());
+		await userEvent.keyboard("{Escape}");
+		await vi.waitFor(() => expect(document.activeElement).toBe(editor.view.dom));
+		expect(editor.state.selection.toJSON()).toEqual(before);
+
+		editor.commands.setTextSelection(editor.state.doc.content.size - 1);
+		const moved = editor.state.selection.toJSON();
+		getToolbarButton(screen, "Table").element().focus();
+		await userEvent.keyboard("{Escape}");
+		expect(editor.state.selection.toJSON()).toEqual(moved);
+
+		editor.view.focus();
+		await userEvent.keyboard("{Alt>}{F10}{/Alt}");
+		await vi.waitFor(() => expect(getToolbarButton(screen, "Table").element()).toHaveFocus());
+		editor.view.focus();
+		editor.commands.setTextSelection(4);
+		const afterAbandoning = editor.state.selection.toJSON();
+		getToolbarButton(screen, "Table").element().focus();
+		await userEvent.keyboard("{Escape}");
+		expect(editor.state.selection.toJSON()).toEqual(afterAbandoning);
+	});
+
+	it("does not consume Alt+F10 when the minimal editor has no Table control", async () => {
+		const { editor } = await renderEditor({ minimal: true });
+		const pm = editor.view.dom;
+		pm.focus();
+		const event = new KeyboardEvent("keydown", {
+			altKey: true,
+			key: "F10",
+			bubbles: true,
+			cancelable: true,
+		});
+		pm.dispatchEvent(event);
+		expect(event.defaultPrevented).toBe(false);
+		expect(document.activeElement).toBe(pm);
+	});
+
+	it("restores the editor selection when the Table menu closes with Escape", async () => {
+		const { screen, editor } = await renderEditor();
+		editor.chain().focus().insertTable({ rows: 2, cols: 2, withHeaderRow: false }).run();
+		const before = editor.state.selection.toJSON();
+		await userEvent.keyboard("{Alt>}{F10}{/Alt}");
+		await vi.waitFor(() => expect(getToolbarButton(screen, "Table").element()).toHaveFocus());
+		await userEvent.keyboard("{Enter}");
+		await expect.element(screen.getByRole("menu")).toBeVisible();
+
+		await userEvent.keyboard("{Escape}");
+
+		await vi.waitFor(() => expect(document.activeElement).toBe(editor.view.dom));
+		expect(editor.state.selection.toJSON()).toEqual(before);
+	});
+
+	it("restores the editor bookmark when the toolbar picker is cancelled", async () => {
+		const { screen, editor } = await renderEditor();
+		editor.chain().focus().setTextSelection(getTextPosition(editor, "Hello world")).run();
+		const before = editor.state.selection.toJSON();
+		getToolbarButton(screen, "Table").element().click();
+		const insert = screen.getByRole("menuitem", { name: "Insert table" });
+		await expect.element(insert).toBeVisible();
+		insert.element().click();
+		const grid = screen.getByRole("grid", { name: "Table size" });
+		await expect.element(grid).toBeVisible();
+
+		await userEvent.keyboard("{Escape}");
+
+		await expect.element(grid).not.toBeInTheDocument();
+		await vi.waitFor(() => expect(document.activeElement).toBe(editor.view.dom));
+		expect(editor.state.selection.toJSON()).toEqual(before);
+	});
+
+	it("does not steal focus when the toolbar picker is dismissed outside", async () => {
+		const { screen } = await renderEditor();
+		const outside = document.body.appendChild(document.createElement("button"));
+		outside.textContent = "Outside";
+		outside.style.cssText = "position:fixed;inset-block-start:0;inset-inline-end:0;z-index:10001";
+		try {
+			getToolbarButton(screen, "Table").element().click();
+			const insert = screen.getByRole("menuitem", { name: "Insert table" });
+			await expect.element(insert).toBeVisible();
+			insert.element().click();
+			await expect.element(screen.getByRole("grid", { name: "Table size" })).toBeVisible();
+			await userEvent.click(outside);
+			await expect
+				.element(screen.getByRole("grid", { name: "Table size" }))
+				.not.toBeInTheDocument();
+			expect(outside).toHaveFocus();
+		} finally {
+			outside.remove();
+		}
+	});
+
+	it("inserts the chosen toolbar table with a trailing paragraph", async () => {
+		const { screen, editor } = await renderEditor();
+		getToolbarButton(screen, "Table").element().click();
+		const insert = screen.getByRole("menuitem", { name: "Insert table" });
+		await expect.element(insert).toBeVisible();
+		insert.element().click();
+		await expect.element(screen.getByRole("grid", { name: "Table size" })).toBeVisible();
+
+		screen.getByRole("gridcell", { name: "2 × 3 table" }).element().click();
+
+		const table = editor.state.doc.content.content.find(
+			(node) => node.type.spec.tableRole === "table",
+		)!;
+		expect(TableMap.get(table)).toMatchObject({ width: 3, height: 2 });
+		expect(table.firstChild?.firstChild?.type.spec.tableRole).toBe("header_cell");
+		expect(editor.state.doc.lastChild?.type.name).toBe("paragraph");
+	});
+
+	it("runs live Table actions and announces only successful changes", async () => {
+		const { screen, editor } = await renderEditor();
+		editor.chain().focus().insertTable({ rows: 2, cols: 2, withHeaderRow: false }).run();
+		getToolbarButton(screen, "Table").element().click();
+		const merge = screen.getByRole("menuitem", { name: "Merge selected cells" });
+		await expect.element(merge).toBeDisabled();
+		const addRow = screen.getByRole("menuitem", { name: "Add row below" });
+		addRow.element().click();
+
+		await vi.waitFor(() =>
+			expect(
+				TableMap.get(editor.state.doc.content.content.find((node) => node.type.name === "table")!),
+			).toMatchObject({ height: 3 }),
+		);
+		await expect.element(screen.getByRole("status")).toHaveTextContent("Row added below");
+	});
+
+	it("announces the first rectangular selection after a structural result", async () => {
+		const { screen, editor } = await renderEditor();
+		editor.chain().focus().insertTable({ rows: 2, cols: 2, withHeaderRow: false }).run();
+		getToolbarButton(screen, "Table").element().click();
+		const addRow = screen.getByRole("menuitem", { name: "Add row below" });
+		await expect.element(addRow).toBeVisible();
+		addRow.element().click();
+		await expect.element(screen.getByRole("status")).toHaveTextContent("Row added below");
+		const cells: number[] = [];
+		editor.state.doc.descendants((node, position) => {
+			if (node.type.spec.tableRole === "cell") cells.push(position);
+		});
+		editor.view.dispatch(
+			editor.state.tr.setSelection(CellSelection.create(editor.state.doc, cells[0]!, cells[3]!)),
+		);
+		await expect
+			.element(screen.getByRole("status"))
+			.toHaveTextContent("2 rows × 2 columns selected");
+	});
+
+	it("announces a newly inserted paragraph before the table", async () => {
+		const { screen, editor } = await renderEditor();
+		editor
+			.chain()
+			.focus()
+			.selectAll()
+			.insertTable({ rows: 1, cols: 1, withHeaderRow: false })
+			.run();
+		getToolbarButton(screen, "Table").element().click();
+		const action = screen.getByRole("menuitem", { name: "Insert paragraph before" });
+		await expect.element(action).toBeVisible();
+		action.element().click();
+		await expect
+			.element(screen.getByRole("status"))
+			.toHaveTextContent("Paragraph inserted before table");
+	});
+
+	it("shows partial header state as visibly and accessibly mixed", async () => {
+		const { screen, editor } = await renderEditor();
+		editor.chain().focus().insertTable({ rows: 2, cols: 2, withHeaderRow: false }).run();
+		const first = editor.state.doc.firstChild!.firstChild!.firstChild!;
+		editor.view.dispatch(
+			editor.state.tr.setNodeMarkup(2, editor.schema.nodes.tableHeader, first.attrs),
+		);
+		getToolbarButton(screen, "Table").element().click();
+		const header = screen.getByRole("menuitemcheckbox", { name: /Toggle header row/ });
+
+		await expect.element(header).toHaveAttribute("aria-checked", "mixed");
+		await expect.element(header).toHaveTextContent("Mixed");
 	});
 
 	it("renders the link editor outside the horizontally scrolling toolbar", async () => {
@@ -408,6 +660,20 @@ describe("Toolbar Presence and Structure", () => {
 		for (const button of buttons) {
 			expect(button.classList.contains("hover:bg-kumo-interact/50")).toBe(true);
 		}
+	});
+
+	it("does not reopen a toolbar picker after a read-only transition", async () => {
+		const { screen } = await renderEditor();
+		getToolbarButton(screen, "Table").element().click();
+		const insert = screen.getByRole("menuitem", { name: "Insert table" });
+		await expect.element(insert).toBeVisible();
+		insert.element().click();
+		await expect.element(screen.getByRole("grid", { name: "Table size" })).toBeVisible();
+
+		await screen.rerender(<PortableTextEditor value={defaultValue} editable={false} />);
+		await expect.element(screen.getByRole("grid", { name: "Table size" })).not.toBeInTheDocument();
+		await screen.rerender(<PortableTextEditor value={defaultValue} />);
+		await expect.element(screen.getByRole("grid", { name: "Table size" })).not.toBeInTheDocument();
 	});
 
 	it("shows Kumo tooltips on pointer hover and keyboard focus", async () => {

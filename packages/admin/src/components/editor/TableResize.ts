@@ -215,7 +215,7 @@ function createHandle(cellPosition: number, side: ReturnType<typeof direction>) 
 	return handle;
 }
 
-function createResizePlugin() {
+function createResizePlugin(onResized?: () => void) {
 	let activeDirection: ReturnType<typeof direction> = "ltr";
 	let dragSession: { cancel: () => void; destroy: () => void } | null = null;
 	return new Plugin<number>({
@@ -333,6 +333,7 @@ function createResizePlugin() {
 						cleanup();
 						if (width !== startWidth) {
 							resizeColumn(view, cellPosition, width, false);
+							onResized?.();
 						} else {
 							restore();
 						}
@@ -388,9 +389,11 @@ function createResizePlugin() {
 	});
 }
 
-export const TableResize = Extension.create({
-	name: "tableResize",
-	addProseMirrorPlugins() {
-		return [createResizePlugin()];
-	},
-});
+export function createTableResize(onResized?: () => void) {
+	return Extension.create({
+		name: "tableResize",
+		addProseMirrorPlugins() {
+			return [createResizePlugin(onResized)];
+		},
+	});
+}

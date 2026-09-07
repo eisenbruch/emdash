@@ -6,6 +6,7 @@
  * toolbar behaviour, focus modes, and editor lifecycle.
  */
 
+import { TableMap } from "@tiptap/pm/tables";
 import type { Editor } from "@tiptap/react";
 import * as React from "react";
 import { describe, it, expect, vi } from "vitest";
@@ -539,6 +540,46 @@ describe("Portable Text ↔ ProseMirror conversion", () => {
 		await expect
 			.element(screen.getByRole("alert"))
 			.toHaveTextContent("This paste is too large. Paste fewer cells or less text at a time.");
+		expect(editor.getJSON()).toEqual(before);
+	});
+
+	it("announces bounded TSV paste dimensions through the stable status region", async () => {
+		const { screen, editor } = await renderAndGetEditor();
+		editor.chain().focus().insertTable({ rows: 1, cols: 1, withHeaderRow: false }).run();
+		const paste = new Event("paste", { bubbles: true, cancelable: true });
+		Object.defineProperty(paste, "clipboardData", {
+			value: {
+				files: [],
+				items: [],
+				types: ["text/plain"],
+				getData: (type: string) => (type === "text/plain" ? "A\tB" : ""),
+			},
+		});
+		editor.view.dom.dispatchEvent(paste);
+		await expect.element(screen.getByRole("status")).toHaveTextContent("1 × 2 table pasted");
+		expect(TableMap.get(editor.state.doc.firstChild!)).toMatchObject({ width: 2, height: 1 });
+	});
+
+	it("reports malformed quoted TSV without mutating the selected table", async () => {
+		const { screen, editor } = await renderAndGetEditor();
+		editor.chain().focus().insertTable({ rows: 1, cols: 1, withHeaderRow: false }).run();
+		const before = editor.getJSON();
+		const paste = new Event("paste", { bubbles: true, cancelable: true });
+		Object.defineProperty(paste, "clipboardData", {
+			value: {
+				files: [],
+				items: [],
+				types: ["text/tab-separated-values"],
+				getData: (type: string) =>
+					type === "text/tab-separated-values" || type === "text/plain" ? '"unfinished' : "",
+			},
+		});
+		editor.view.dom.dispatchEvent(paste);
+		await expect
+			.element(screen.getByRole("alert"))
+			.toHaveTextContent(
+				"This spreadsheet data has invalid quoted cells. Fix the quotes or remove the tab separators and try again.",
+			);
 		expect(editor.getJSON()).toEqual(before);
 	});
 
@@ -1468,6 +1509,10 @@ describe("Code block copy action", () => {
 				.element(screen.getByRole("button", { name: "Set language (current: JavaScript)" }))
 				.toBeInTheDocument();
 			const copyButton = screen.getByRole("button", { name: "Copy code" });
+			const status = copyButton
+				.element()
+				.closest(".emdash-code-block-node")!
+				.querySelector('[role="status"]')!;
 			await expect.element(copyButton).toBeInTheDocument();
 			vi.useFakeTimers();
 			await copyButton.click();
@@ -1475,9 +1520,9 @@ describe("Code block copy action", () => {
 				expect(clipboardWrite).toHaveBeenCalledWith("const greeting = 'hello';");
 			});
 			await expect.element(screen.getByRole("button", { name: "Copy code" })).toBeInTheDocument();
-			await expect.element(screen.getByRole("status")).toHaveTextContent("Copied");
+			await expect.element(status).toHaveTextContent("Copied");
 			await vi.advanceTimersByTimeAsync(1500);
-			await expect.element(screen.getByRole("status")).toHaveTextContent("");
+			await expect.element(status).toHaveTextContent("");
 		} finally {
 			vi.useRealTimers();
 			clipboardWrite.mockRestore();
@@ -1511,22 +1556,23 @@ describe("Code block copy action", () => {
 				],
 			});
 			const copyButton = screen.getByRole("button", { name: "Copy code" }).element();
+			const status = copyButton
+				.closest(".emdash-code-block-node")!
+				.querySelector('[role="status"]')!;
 			copyButton.click();
 			await vi.waitFor(() => expect(clipboardWrite).toHaveBeenCalledTimes(1));
 			copyButton.click();
 			await vi.waitFor(() => expect(clipboardWrite).toHaveBeenCalledTimes(2));
 
 			resolveSecond();
-			await expect.element(screen.getByRole("status")).toHaveTextContent("Copied");
+			await expect.element(status).toHaveTextContent("Copied");
 			rejectFirst(new DOMException("Denied", "NotAllowedError"));
-			await vi.waitFor(() =>
-				expect(screen.getByRole("status").element().textContent).toBe("Copied"),
-			);
+			await vi.waitFor(() => expect(status.textContent).toBe("Copied"));
 
 			copyButton.click();
 			await vi.waitFor(() => expect(clipboardWrite).toHaveBeenCalledTimes(3));
 			await expect.element(screen.getByRole("button", { name: "Retry copy" })).toBeVisible();
-			await expect.element(screen.getByRole("status")).toHaveTextContent("Copy failed");
+			await expect.element(status).toHaveTextContent("Copy failed");
 			expect(copyCommand).toHaveBeenCalledTimes(1);
 		} finally {
 			copyCommand.mockRestore();
