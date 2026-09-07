@@ -795,17 +795,19 @@ function convertMark(
 		case "link": {
 			const rawHref = mark.attrs?.href;
 			const href = typeof rawHref === "string" ? rawHref : "";
-			if (markDefMap.has(href)) {
-				return markDefMap.get(href)!;
+			const blank = mark.attrs?.target === "_blank";
+			const identity = JSON.stringify([href, blank]);
+			if (markDefMap.has(identity)) {
+				return markDefMap.get(identity)!;
 			}
 			const key = generateKey();
 			markDefs.push({
 				_type: "link",
 				_key: key,
 				href,
-				blank: mark.attrs?.target === "_blank",
+				blank,
 			});
-			markDefMap.set(href, key);
+			markDefMap.set(identity, key);
 			return key;
 		}
 		default:

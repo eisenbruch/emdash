@@ -155,6 +155,7 @@ function normalizeTable(value: unknown, context: PortableTextTableContext) {
 	const seen = new Set<string>();
 	const tableKey = reserveKey(readKey(value._key) ?? legacyKey(`${context.path}:table`), seen);
 	const tableMarkDefs = normalizeMarkDefs(value.markDefs);
+	const tableMarks = indexMarkDefs(tableMarkDefs);
 	const firstContentRow = rawRows.findIndex(
 		(row) => isRecord(row) && Array.isArray(row.cells) && row.cells.length > 0,
 	);
@@ -182,7 +183,7 @@ function normalizeTable(value: unknown, context: PortableTextTableContext) {
 					remainingRows: rawRows.length - rowIndex,
 					promoteHeader: promoteHeader && rowIndex === firstContentRow,
 					seen,
-					tableMarkDefs,
+					tableMarks,
 				}),
 			),
 		};
@@ -274,6 +275,7 @@ export function portableTextTableToProseMirror(
 	const normalized = normalizePortableTextTable(value, context);
 	if (!normalized.ok) return normalized;
 	const { table } = normalized;
+	const resolveCellMarkDefs = createPortableTextTableCellMarkResolver(table);
 	return {
 		ok: true as const,
 		width: normalized.width,
@@ -296,10 +298,7 @@ export function portableTextTableToProseMirror(
 					content: [
 						{
 							type: "paragraph",
-							content: context.spansToInline(
-								cell.content,
-								getPortableTextTableCellMarkDefs(table, cell),
-							),
+							content: context.spansToInline(cell.content, resolveCellMarkDefs(cell)),
 						},
 					],
 				})),
@@ -410,6 +409,21 @@ export function getPortableTextTableCellMarkDefs(
 	return getMarkDefs(table.markDefs ?? [], cell.markDefs ?? []);
 }
 
+export function createPortableTextTableCellMarkResolver(table: PortableTextTableBlock) {
+	const shared = indexMarkDefs(table.markDefs ?? []);
+	return (cell: PortableTextTableCell): PortableTextTableMarkDef[] => {
+		const local = indexMarkDefs(cell.markDefs ?? []);
+		const referenced = new Map<string, PortableTextTableMarkDef>();
+		for (const span of cell.content) {
+			for (const key of span.marks ?? []) {
+				const definition = local.get(key) ?? shared.get(key);
+				if (definition) referenced.set(key, definition);
+			}
+		}
+		return [...referenced.values()];
+	};
+}
+
 export function getPortableTextTableColumnWidths(
 	table: PortableTextTableBlock,
 ): number[] | undefined {
@@ -440,13 +454,14 @@ function normalizeCell(
 		remainingRows: number;
 		promoteHeader: boolean;
 		seen: Set<string>;
-		tableMarkDefs: PortableTextTableMarkDef[];
+		tableMarks: ReadonlyMap<string, PortableTextTableMarkDef>;
 	},
 ): PortableTextTableCell {
 	if (typeof value !== "string" && !isRecord(value)) return fail("UNSUPPORTED_CELL_CONTENT");
 	const record = asRecord(value);
 	const key = reserveKey(readKey(record._key) ?? legacyKey(context.path), context.seen);
 	const markDefs = normalizeMarkDefs(record.markDefs);
+	const localMarks = indexMarkDefs(markDefs);
 	const colspan = normalizeSpan(record.colspan);
 	const rowspan = Math.min(normalizeSpan(record.rowspan), Math.max(1, context.remainingRows));
 	const colwidth = normalizeColwidth(record.colwidth, colspan);
@@ -466,7 +481,7 @@ function normalizeCell(
 			value,
 			record.content,
 			key,
-			getMarkDefs(context.tableMarkDefs, markDefs),
+			(mark) => localMarks.get(mark) ?? context.tableMarks.get(mark),
 		),
 	};
 	if (markDefs.length > 0) cell.markDefs = markDefs;
@@ -482,7 +497,7 @@ function normalizeContent(
 	rawCell: unknown,
 	rawContent: unknown,
 	cellKey: string,
-	markDefs: PortableTextTableMarkDef[],
+	resolveMark: (key: string) => PortableTextTableMarkDef | undefined,
 ): PortableTextTableSpan[] {
 	const fallbackSpan = (text: string): UnknownRecord => ({
 		_type: "span",
@@ -498,7 +513,6 @@ function normalizeContent(
 					? []
 					: rawContent;
 	if (!Array.isArray(values)) return fail("UNSUPPORTED_CELL_CONTENT");
-	const knownMarks = new Map(markDefs.map((mark) => [mark._key, mark]));
 	const content = values.map((value, index): PortableTextTableSpan => {
 		if (!isRecord(value) || value._type !== "span" || typeof value.text !== "string") {
 			return fail("UNSUPPORTED_CELL_CONTENT");
@@ -509,7 +523,7 @@ function normalizeContent(
 		for (const mark of marks) {
 			if (
 				typeof mark !== "string" ||
-				(!DECORATOR_MARKS.has(mark) && knownMarks.get(mark)?._type !== "link")
+				(!DECORATOR_MARKS.has(mark) && resolveMark(mark)?._type !== "link")
 			) {
 				return fail("UNSUPPORTED_MARK_DEFINITION");
 			}
@@ -658,29 +672,28 @@ function unsafeResult(reason: UnsafePortableTextTableReason, raw: unknown, path:
 	};
 }
 
-function makeRenderFallback(raw: unknown, path: string): PortableTextTableBlock {
+function makeRenderFallback(raw: unknown, path: string): PortableTextTableBlock | undefined {
 	const record = asRecord(raw);
 	const seen = new Set<string>();
 	const tableKey = reserveKey(readKey(record._key) ?? legacyKey(`${path}:fallback-table`), seen);
 	let remaining = MAX_TABLE_REPAIRED_SLOTS;
 	const rows: PortableTextTableRow[] = [];
 	for (const [rowIndex, rawRow] of (Array.isArray(record.rows) ? record.rows : []).entries()) {
-		if (remaining === 0) break;
 		const row = asRecord(rawRow);
+		const rawCells = Array.isArray(row.cells) ? row.cells : [];
+		if (Math.max(rawCells.length, 1) > remaining) return undefined;
 		const rowKey = reserveKey(
 			readKey(row._key) ?? legacyKey(`${tableKey}:fallback-row:${rowIndex}`),
 			seen,
 		);
-		const cells = (Array.isArray(row.cells) ? row.cells.slice(0, remaining) : []).map(
-			(rawCell, cellIndex): PortableTextTableCell => {
-				const cell = asRecord(rawCell);
-				const key = reserveKey(
-					readKey(cell._key) ?? legacyKey(`${rowKey}:fallback-cell:${cellIndex}`),
-					seen,
-				);
-				return fallbackCell(rawCell, key);
-			},
-		);
+		const cells = rawCells.map((rawCell, cellIndex): PortableTextTableCell => {
+			const cell = asRecord(rawCell);
+			const key = reserveKey(
+				readKey(cell._key) ?? legacyKey(`${rowKey}:fallback-cell:${cellIndex}`),
+				seen,
+			);
+			return fallbackCell(rawCell, key);
+		});
 		if (cells.length === 0) {
 			cells.push(emptyCell(reserveKey(legacyKey(`${rowKey}:empty`), seen)));
 		}
@@ -723,11 +736,14 @@ function recoverText(value: unknown, depth = 0): string {
 	return recoverText(nested, depth + 1);
 }
 
+const indexMarkDefs = (marks: PortableTextTableMarkDef[]) =>
+	new Map(marks.map((mark) => [mark._key, mark]));
+
 function getMarkDefs(
 	table: PortableTextTableMarkDef[],
 	cell: PortableTextTableMarkDef[],
 ): PortableTextTableMarkDef[] {
-	const byKey = new Map(table.map((mark) => [mark._key, mark]));
+	const byKey = indexMarkDefs(table);
 	for (const mark of cell) byKey.set(mark._key, mark);
 	return [...byKey.values()];
 }

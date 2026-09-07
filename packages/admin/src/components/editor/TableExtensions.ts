@@ -1,11 +1,22 @@
-import { Extension } from "@tiptap/core";
+import { Extension, type Command } from "@tiptap/core";
 import { Table } from "@tiptap/extension-table";
 import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
 import { TableRow } from "@tiptap/extension-table-row";
+import { closeHistory } from "@tiptap/pm/history";
 import type { ResolvedPos } from "@tiptap/pm/model";
-import { Plugin, type EditorState } from "@tiptap/pm/state";
-import { CellSelection } from "@tiptap/pm/tables";
+import { Plugin, Selection, TextSelection, type EditorState } from "@tiptap/pm/state";
+import {
+	CellSelection,
+	cellAround,
+	deleteColumn,
+	deleteRow,
+	nextCell,
+	selectedRect,
+} from "@tiptap/pm/tables";
+import type { EditorView } from "@tiptap/pm/view";
+
+import { MAX_TABLE_REPAIRED_SLOTS, MAX_TABLE_SPAN } from "../../portable-text-table.js";
 
 const TABLE_NODE_ROLES = new Set(["table", "row", "cell", "header_cell"]);
 const TABLE_ALIGNMENTS = new Set(["left", "center", "right", "justify"]);
@@ -92,7 +103,165 @@ export function selectionIsContainedInTableCells(state: EditorState): boolean {
 	return from !== null && from === tableCellPosition(state.selection.$to);
 }
 
+function boundedInsertion(command: Command, axis: "row" | "column", before: boolean): Command {
+	return (props) => {
+		if (!selectionIsContainedInTableCells(props.state)) return false;
+		const rect = selectedRect(props.state);
+		const { map, table } = rect;
+		const row = axis === "row";
+		const extent = row ? map.height : map.width;
+		const cross = row ? map.width : map.height;
+		if ((extent + 1) * cross > MAX_TABLE_REPAIRED_SLOTS) return false;
+		const boundary = row ? (before ? rect.top : rect.bottom) : before ? rect.left : rect.right;
+		if (boundary > 0 && boundary < extent) {
+			for (let index = 0; index < cross; index++) {
+				const slot = row ? boundary * map.width + index : index * map.width + boundary;
+				const position = map.map[slot]!;
+				if (
+					position === map.map[slot - (row ? map.width : 1)] &&
+					table.nodeAt(position)!.attrs[row ? "rowspan" : "colspan"] >= MAX_TABLE_SPAN
+				)
+					return false;
+			}
+		}
+		return command(props);
+	};
+}
+
+function rtlCellEntry(view: EditorView, cell: ResolvedPos, direction: 1 | -1): ResolvedPos {
+	const boundary = Selection.near(
+		direction > 0 ? cell : view.state.doc.resolve(cell.pos + cell.nodeAfter!.nodeSize),
+		direction,
+	).$head;
+	const element = view.nodeDOM(cell.pos);
+	if (element instanceof HTMLElement) {
+		element.scrollIntoView({ block: "nearest", inline: "nearest" });
+		const start = view.coordsAtPos(boundary.start(), 1);
+		const end = view.coordsAtPos(boundary.end(), -1);
+		if (start.top === end.top)
+			return view.state.doc.resolve(
+				start.left > end.left === direction > 0 ? boundary.start() : boundary.end(),
+			);
+		const paragraph = element.querySelector(direction > 0 ? "p" : "p:last-of-type");
+		if (paragraph) {
+			const bounds = paragraph.getBoundingClientRect();
+			const hit = view.posAtCoords({
+				left: direction > 0 ? bounds.right - 1 : bounds.left + 1,
+				top: direction > 0 ? (start.top + start.bottom) / 2 : (end.top + end.bottom) / 2,
+			});
+			if (hit && hit.pos > cell.pos && hit.pos < cell.pos + cell.nodeAfter!.nodeSize)
+				return view.state.doc.resolve(hit.pos);
+		}
+	}
+	return boundary;
+}
+
+function deleteSelectedTableAxis(view: EditorView, event: KeyboardEvent): boolean {
+	if (
+		!view.editable ||
+		view.composing ||
+		event.isComposing ||
+		event.altKey ||
+		event.ctrlKey ||
+		event.metaKey ||
+		event.shiftKey ||
+		(event.key !== "Backspace" && event.key !== "Delete")
+	)
+		return false;
+	const { selection } = view.state;
+	if (!(selection instanceof CellSelection)) return false;
+	const row = selection.isRowSelection();
+	if (row === selection.isColSelection()) return false;
+	const rect = selectedRect(view.state);
+	const command = row ? deleteRow : deleteColumn;
+	const handled = command(view.state, (transaction) => {
+		view.dispatch(
+			closeHistory(transaction).setMeta(
+				row ? "emdashDeletedTableRows" : "emdashDeletedTableColumns",
+				row ? rect.bottom - rect.top : rect.right - rect.left,
+			),
+		);
+	});
+	if (handled) event.preventDefault();
+	return handled;
+}
+
+function handleRtlTableKey(view: EditorView, event: KeyboardEvent): boolean {
+	if (
+		!view.editable ||
+		event.altKey ||
+		event.ctrlKey ||
+		event.metaKey ||
+		event.isComposing ||
+		(event.key !== "ArrowLeft" && event.key !== "ArrowRight")
+	)
+		return false;
+	const { selection } = view.state;
+	if (!(selection instanceof CellSelection) && !(selection instanceof TextSelection)) return false;
+	const cell =
+		selection instanceof CellSelection ? selection.$headCell : cellAround(selection.$head);
+	const element = cell ? view.nodeDOM(cell.pos) : null;
+	const table = element instanceof Element ? element.closest("table") : null;
+	if (!cell || !table || getComputedStyle(table).direction !== "rtl") return false;
+	const direction = event.key === "ArrowLeft" ? 1 : -1;
+	if (selection instanceof TextSelection) {
+		// Skipping the upstream key handler leaves native bidi character movement intact.
+		if (!event.shiftKey && !selection.empty) return true;
+		const paragraph = selection.$head.index(cell.depth + 1);
+		const backward = selection.$head.parent.content.size
+			? selection.$head.parentOffset === 0
+			: direction < 0;
+		if (
+			!view.endOfTextblock(event.key === "ArrowLeft" ? "left" : "right") ||
+			paragraph !== (backward ? 0 : cell.nodeAfter!.childCount - 1)
+		)
+			return true;
+	}
+	const next =
+		selection instanceof CellSelection && !event.shiftKey
+			? cell
+			: nextCell(cell, "horiz", direction);
+	if (!next && !event.shiftKey) return true;
+	if (next) {
+		const anchor = selection instanceof CellSelection ? selection.$anchorCell : cell;
+		view.dispatch(
+			view.state.tr
+				.setSelection(
+					event.shiftKey
+						? new CellSelection(anchor, next)
+						: Selection.near(rtlCellEntry(view, next, direction), direction),
+				)
+				.scrollIntoView(),
+		);
+	}
+	event.preventDefault();
+	return true;
+}
+
 export const EmDashTable = Table.extend({
+	addProseMirrorPlugins() {
+		return [
+			new Plugin({
+				props: {
+					handleDOMEvents: {
+						keydown: (view, event) =>
+							deleteSelectedTableAxis(view, event) || handleRtlTableKey(view, event),
+					},
+				},
+			}),
+			...this.parent!(),
+		];
+	},
+	addCommands() {
+		const parent = this.parent!();
+		return {
+			...parent,
+			addRowBefore: () => boundedInsertion(parent.addRowBefore!(), "row", true),
+			addRowAfter: () => boundedInsertion(parent.addRowAfter!(), "row", false),
+			addColumnBefore: () => boundedInsertion(parent.addColumnBefore!(), "column", true),
+			addColumnAfter: () => boundedInsertion(parent.addColumnAfter!(), "column", false),
+		};
+	},
 	addAttributes() {
 		return tableAttributes(this.parent?.() ?? {});
 	},

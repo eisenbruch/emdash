@@ -1,7 +1,7 @@
 ---
 import {
 	TABLE_CELL_MIN_WIDTH,
-	getPortableTextTableCellMarkDefs,
+	createPortableTextTableCellMarkResolver,
 	getPortableTextTableColumnWidths,
 	normalizePortableTextTable,
 	type PortableTextTableBlock,
@@ -27,6 +27,7 @@ const normalized = normalizePortableTextTable(node, {
 	createKey: () => `render-table-${generatedKey++}`,
 });
 const table = normalized.ok ? normalized.table : normalized.renderFallback;
+const resolveCellMarkDefs = table ? createPortableTextTableCellMarkResolver(table) : undefined;
 const rawRows = table ? undefined : getRawRows(normalized.raw);
 const placedRows = table ? placeCells(table) : [];
 const visualWidth = normalized.ok
@@ -110,14 +111,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function cellToBlock(sourceTable: PortableTextTableBlock, cell: PortableTextTableCell) {
+function cellToBlock(cell: PortableTextTableCell) {
 	return [
 		{
 			_type: "block" as const,
 			_key: cell._key,
 			style: "normal",
 			children: cell.content,
-			markDefs: getPortableTextTableCellMarkDefs(sourceTable, cell),
+			markDefs: resolveCellMarkDefs?.(cell) ?? [],
 		},
 	];
 }
@@ -149,7 +150,7 @@ function cellAttributes(cell: PortableTextTableCell, scope?: "col" | "row") {
 					<tr>
 						{headerRow.map(({ cell }) => (
 							<th {...cellAttributes(cell, "col")}>
-								<PortableText value={cellToBlock(table, cell)} components={markComponents} />
+								<PortableText value={cellToBlock(cell)} components={markComponents} />
 							</th>
 						))}
 					</tr>
@@ -166,7 +167,7 @@ function cellAttributes(cell: PortableTextTableCell, scope?: "col" | "row") {
 								cell.isHeader && column === 0 && (cell.rowspan ?? 1) === 1 ? "row" : undefined;
 							return (
 								<CellTag {...cellAttributes(cell, scope)}>
-									<PortableText value={cellToBlock(table, cell)} components={markComponents} />
+									<PortableText value={cellToBlock(cell)} components={markComponents} />
 								</CellTag>
 							);
 						})}

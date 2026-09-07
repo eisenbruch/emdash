@@ -191,42 +191,52 @@ describe("Portable Text table rendering", () => {
 		expect(header).not.toContain('scope="row"');
 	});
 
-	it("renders every recoverable oversized source cell without materializing its spans", async () => {
-		const cells = Array.from({ length: MAX_TABLE_REPAIRED_SLOTS + 1 }, (_, index) => ({
-			_type: "tableCell",
-			_key: `oversized-cell-${index}`,
-			content: [
-				index === 0
-					? {
-							_type: "block",
-							children: [
-								{
+	it.each([false, true])(
+		"renders every recoverable source cell with an empty leading row: %s",
+		async (leadingEmptyRow) => {
+			const cells = Array.from(
+				{ length: MAX_TABLE_REPAIRED_SLOTS + (leadingEmptyRow ? 0 : 1) },
+				(_, index) => ({
+					_type: "tableCell",
+					_key: `oversized-cell-${index}`,
+					content: [
+						index === 0
+							? {
+									_type: "block",
+									children: [
+										{
+											_type: "span",
+											_key: "oversized-span-0",
+											text: "Cell 0",
+										},
+									],
+								}
+							: {
 									_type: "span",
-									_key: "oversized-span-0",
-									text: "Cell 0",
+									_key: `oversized-span-${index}`,
+									text: `Cell ${index}`,
 								},
-							],
-						}
-					: {
-							_type: "span",
-							_key: `oversized-span-${index}`,
-							text: `Cell ${index}`,
-						},
-			],
-		}));
-		const html = await render([
-			{
-				_type: "table",
-				_key: "oversized-table",
-				rows: [{ _type: "tableRow", _key: "oversized-row", cells }],
-			},
-		]);
+					],
+				}),
+			);
+			const html = await render([
+				{
+					_type: "table",
+					_key: "oversized-table",
+					rows: [
+						...(leadingEmptyRow ? [{ _type: "tableRow", _key: "empty-row", cells: [] }] : []),
+						{ _type: "tableRow", _key: "oversized-row", cells },
+					],
+				},
+			]);
 
-		expect(tags(html, "td")).toHaveLength(cells.length);
-		expect(html).toContain("Cell 0");
-		expect(html).toContain("Cell 200");
-		expect(html).not.toContain("colspan");
-	});
+			expect(tags(html, "td")).toHaveLength(cells.length);
+			expect(html).toContain("Cell 0");
+			expect(html).toContain("Cell 200");
+			expect(html.match(/Cell \d+/g)?.at(-1)).toBe(`Cell ${cells.length - 1}`);
+			expect(html).not.toContain("colspan");
+		},
+	);
 
 	it("keeps nested text visible and escaped when unsupported cell content uses the fallback", async () => {
 		const html = await render([

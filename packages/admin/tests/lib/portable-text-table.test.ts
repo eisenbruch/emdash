@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
 	MAX_TABLE_REPAIRED_SLOTS,
@@ -34,6 +34,63 @@ function row(key: string, cells: unknown[]) {
 }
 
 describe("Portable Text table normalization", () => {
+	it.each([16, 64])("indexes shared annotations linearly for %i cells", (size) => {
+		const markDefs = Array.from({ length: size }, (_, index) => ({
+			_type: "link",
+			_key: `shared-link-${index}`,
+			href: `/shared/${index}`,
+			source: "import",
+		}));
+		const source = {
+			_type: "table",
+			_key: "indexed",
+			markDefs,
+			rows: [
+				row(
+					"row",
+					Array.from({ length: size }, (_, index) => ({
+						...cell(`cell-${index}`, "Linked"),
+						content: [span(`span-${index}`, "Linked", ["shared-link-0"])],
+						markDefs: [{ ...markDefs[0]!, href: `/local/${index}` }],
+					})),
+				),
+			],
+		};
+		let writes = 0;
+		let resolvedDefinitions = 0;
+		const context = { path: "root:indexed", createKey: keyFactory() };
+		const originalSet = Map.prototype.set;
+		const set = vi.spyOn(Map.prototype, "set").mockImplementation(function (key, value) {
+			if (typeof key === "string" && key.startsWith("shared-link-")) writes++;
+			return originalSet.call(this, key, value);
+		});
+		try {
+			const converted = portableTextTableToProseMirror(source, {
+				...context,
+				spansToInline: (_content, resolved) => {
+					resolvedDefinitions += resolved.length;
+					return [{ type: "text", text: String(resolved[0]?.href) }];
+				},
+			});
+			expect(converted.ok).toBe(true);
+			if (!converted.ok) return;
+			expect(
+				converted.node.content[0]!.content.map((entry) => entry.content[0]!.content[0]!.text),
+			).toEqual(Array.from({ length: size }, (_, index) => `/local/${index}`));
+			expect(writes).toBeLessThanOrEqual(size * 8);
+			expect(resolvedDefinitions).toBe(size);
+		} finally {
+			set.mockRestore();
+		}
+		const normalized = normalizePortableTextTable(source, context);
+		expect(normalized.ok).toBe(true);
+		if (!normalized.ok) return;
+		expect(normalized.table.markDefs).toEqual(markDefs);
+		expect(normalized.table.rows[0]!.cells.map((entry) => entry.markDefs)).toEqual(
+			source.rows[0]!.cells.map((entry) => entry.markDefs),
+		);
+	});
+
 	it("recognizes only table-shaped inputs", () => {
 		expect(isPortableTextTableInput({ _type: "table", rows: [] })).toBe(true);
 		expect(isPortableTextTableInput({ _type: "image", rows: [] })).toBe(false);
@@ -303,6 +360,25 @@ describe("Portable Text table normalization", () => {
 		expect(result.ok).toBe(false);
 		if (result.ok) return;
 		expect(result.reason).toBe("TABLE_TOO_LARGE");
+		expect(result.raw).toBe(input);
+		expect(result.renderFallback).toBeUndefined();
+	});
+
+	it.each(["cell", "row"])("keeps raw input when the fallback would omit its final %s", (end) => {
+		const cells: unknown[] = Array(MAX_TABLE_REPAIRED_SLOTS - 1).fill("Body");
+		cells[0] = { content: [{ _type: "block", children: [span("nested", "Recoverable")] }] };
+		const input = { _type: "table", rows: [row("empty", []), row("body", cells)] };
+		if (end === "cell") cells.push("Keep the last cell");
+		else input.rows.push(row("last", ["Keep the last cell"]));
+
+		const result = normalizePortableTextTable(input, {
+			path: "root:fallback-limit",
+			createKey: keyFactory(),
+		});
+
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.reason).toBe("UNSUPPORTED_CELL_CONTENT");
 		expect(result.raw).toBe(input);
 		expect(result.renderFallback).toBeUndefined();
 	});

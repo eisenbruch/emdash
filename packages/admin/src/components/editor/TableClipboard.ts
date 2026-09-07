@@ -16,6 +16,7 @@ import {
 	MAX_TABLE_PASTE_COLUMNS,
 	MAX_TABLE_PASTE_ROWS,
 	MAX_TABLE_PASTE_TEXT_BYTES,
+	MAX_TABLE_REPAIRED_SLOTS,
 } from "../../portable-text-table.js";
 import type { TablePasteRejection } from "./TableCellSafety.js";
 import { selectionIsContainedInTableCells } from "./TableExtensions.js";
@@ -168,6 +169,14 @@ function pasteGrid(
 	const { rect, position } = pasteAnchor(view.state);
 	const cells = __pastedCells(slice);
 	if (!cells) return false;
+	if (
+		Math.max(rect.map.height, rect.top + cells.height) *
+			Math.max(rect.map.width, rect.left + cells.width) >
+		MAX_TABLE_REPAIRED_SLOTS
+	) {
+		onRejected("too-large");
+		return true;
+	}
 	const headerRow = rect.map
 		.cellsInRect({ left: 0, top: 0, right: rect.map.width, bottom: 1 })
 		.every((cell) => rect.table.nodeAt(cell)?.type.spec.tableRole === "header_cell");
@@ -275,9 +284,9 @@ export function createTableClipboard(
 				new Plugin({
 					key: new PluginKey("tableClipboard"),
 					props: {
+						// A falsy result delegates ordinary selections to TipTap's text serializer.
 						clipboardTextSerializer: (_slice, view) =>
-							serializeCellSelectionToTsv(view.state) ??
-							_slice.content.textBetween(0, _slice.content.size, "\n\n"),
+							serializeCellSelectionToTsv(view.state) ?? "",
 						handlePaste: (view, event, slice) => {
 							if (!selectionIsContainedInTableCells(view.state)) return false;
 							const semanticTable = __pastedCells(slice);

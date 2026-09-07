@@ -15,6 +15,7 @@ import {
 
 import {
 	MAX_TABLE_COLUMN_WIDTH,
+	MAX_TABLE_SPAN,
 	TABLE_CELL_MIN_WIDTH,
 	TABLE_COLUMN_WIDTH_STEP,
 } from "../../portable-text-table.js";
@@ -254,6 +255,8 @@ function runWidth(context: Context, id: TableActionId) {
 }
 
 function canMerge({ editor, rect }: Context) {
+	if (rect.right - rect.left > MAX_TABLE_SPAN || rect.bottom - rect.top > MAX_TABLE_SPAN)
+		return false;
 	if (!(editor.state.selection instanceof CellSelection) || !mergeCells(editor.state)) return false;
 	const cells = rect.map.cellsInRect(rect).map((position) => rect.table.nodeAt(position)!);
 	const alignment = cells[0]?.attrs.textAlign;
@@ -352,6 +355,10 @@ function adjacentParagraph({ editor, rect }: Context, before: boolean) {
 
 function canRun(context: Context, id: TableActionId): boolean {
 	if (hasOwn(SELECTIONS, id)) return canSelect(context, SELECTIONS[id]);
+	if (id === "delete-row")
+		return context.rect.top > 0 || context.rect.bottom < context.rect.map.height;
+	if (id === "delete-column")
+		return context.rect.left > 0 || context.rect.right < context.rect.map.width;
 	if (hasOwn(COMMANDS, id)) return chain(context, COMMANDS[id], true);
 	if (id === "header-row" || id === "header-column")
 		return canHeader(context.rect, id === "header-row" ? "row" : "column");

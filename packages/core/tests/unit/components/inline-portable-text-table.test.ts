@@ -65,6 +65,18 @@ afterEach(() => {
 });
 
 describe("inline editor table preservation", () => {
+	it("keeps the raw table when cutting its opaque placeholder", () => {
+		const editor = createEditor(portableTextToPM([table]));
+		editor.commands.setNodeSelection(0);
+		const before = editor.getJSON();
+		const cut = new Event("cut", { bubbles: true, cancelable: true });
+		Object.defineProperty(cut, "clipboardData", {
+			value: { clearData() {}, setData() {} },
+		});
+		editor.view.dom.dispatchEvent(cut);
+		expect(editor.getJSON()).toEqual(before);
+	});
+
 	it("stores the complete table in one opaque ProseMirror node", () => {
 		const document = portableTextToPM([table]);
 		const node = document.content?.[0];

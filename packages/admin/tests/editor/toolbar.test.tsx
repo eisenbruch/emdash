@@ -493,6 +493,41 @@ describe("Toolbar Presence and Structure", () => {
 		expect(editor.state.selection.toJSON()).toEqual(before);
 	});
 
+	it.each([
+		["menu", "editor"],
+		["menu", "outside"],
+		["picker", "editor"],
+		["picker", "outside"],
+	])("preserves newer focus after closing the %s in the %s", async (kind, destination) => {
+		const { screen, editor } = await renderEditor();
+		editor.chain().focus().setTextSelection(getTextPosition(editor, "Hello world")).run();
+		if (kind === "menu") editor.commands.insertTable({ rows: 2, cols: 2, withHeaderRow: false });
+		const before = editor.state.selection.toJSON();
+		getToolbarButton(screen, "Table").element().click();
+		await expect.element(screen.getByRole("menu")).toBeVisible();
+		if (kind === "picker") screen.getByRole("menuitem", { name: "Insert table" }).element().click();
+		const popup = screen.getByRole(kind === "menu" ? "menu" : "dialog");
+		await expect.element(popup).toBeVisible();
+		const animation = popup.element().animate({ opacity: [1, 1] }, { duration: 1000 });
+		animation.pause();
+		await userEvent.keyboard("{Escape}");
+		const target =
+			destination === "editor"
+				? editor.view.dom
+				: screen.container.appendChild(document.createElement("input"));
+		await userEvent.click(
+			kind === "menu" && destination === "editor"
+				? editor.view.dom.querySelectorAll("td")[1]!
+				: target,
+		);
+		const moved = editor.state.selection.toJSON();
+		if (destination === "editor") expect(moved).not.toEqual(before);
+		animation.finish();
+		await expect.element(popup).not.toBeInTheDocument();
+		expect(target).toHaveFocus();
+		expect(editor.state.selection.toJSON()).toEqual(moved);
+	});
+
 	it("does not steal focus when the toolbar picker is dismissed outside", async () => {
 		const { screen } = await renderEditor();
 		const outside = document.body.appendChild(document.createElement("button"));

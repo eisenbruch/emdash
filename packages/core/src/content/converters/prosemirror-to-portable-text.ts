@@ -393,7 +393,7 @@ function convertInlineContent(
 } {
 	const children: PortableTextSpan[] = [];
 	const markDefs: PortableTextMarkDef[] = [];
-	const markDefMap = new Map<string, string>(); // href -> key
+	const markDefMap = new Map<string, string>();
 
 	for (const node of nodes) {
 		if (node.type === "text" && node.text) {
@@ -474,10 +474,12 @@ function convertMark(
 
 		case "link": {
 			const href = (typeof mark.attrs?.href === "string" ? mark.attrs.href : "") || "";
+			const blank = mark.attrs?.target === "_blank";
+			const identity = JSON.stringify([href, blank]);
 
 			// Check if we already have a mark def for this link
-			if (markDefMap.has(href)) {
-				return markDefMap.get(href)!;
+			if (markDefMap.has(identity)) {
+				return markDefMap.get(identity)!;
 			}
 
 			// Create new mark def
@@ -486,9 +488,9 @@ function convertMark(
 				_type: "link",
 				_key: key,
 				href,
-				blank: mark.attrs?.target === "_blank",
+				blank,
 			});
-			markDefMap.set(href, key);
+			markDefMap.set(identity, key);
 
 			return key;
 		}

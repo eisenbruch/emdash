@@ -1136,6 +1136,17 @@ const TableBlockNode = Node.create({
 		return [
 			new Plugin({
 				props: {
+					handleDOMEvents: {
+						cut: (view, event) => {
+							let hasTable = false;
+							view.state.selection.content().content.descendants((node) => {
+								hasTable ||= node.type.name === "table";
+							});
+							if (!hasTable) return false;
+							event.preventDefault();
+							return true;
+						},
+					},
 					handlePaste: (_view, event, slice) => {
 						const html = event.clipboardData?.getData("text/html") ?? "";
 						if (!TABLE_BLOCK_PLACEHOLDER_HTML.test(html)) return false;

@@ -223,17 +223,24 @@ describe("direction-aware table resizing", () => {
 		]);
 	});
 
-	it("persists an LTR resize once on mouseup and supports undo and redo", () => {
+	it("commits an LTR resize and handle cleanup together with undo and redo", () => {
 		const { editor, host } = createEditor("ltr");
-		let documentTransactions = 0;
-		editor.on("transaction", ({ transaction }) => {
-			if (transaction.docChanged) documentTransactions++;
-		});
 		const firstCell = host.querySelector<HTMLTableCellElement>("td")!;
+		const { handle, inlineEnd } = activateHandle(firstCell, "ltr");
+		const transactions: Array<{ changed: boolean; handles: number }> = [];
+		editor.on("transaction", ({ transaction }) => {
+			transactions.push({
+				changed: transaction.docChanged,
+				handles: host.querySelectorAll("[data-emdash-resize-cell]").length,
+			});
+		});
 
-		resizeColumn(firstCell, "ltr", 32);
+		mouse(handle, "mousedown", inlineEnd);
+		mouse(window, "mousemove", inlineEnd + 32);
+		mouse(window, "mousemove", inlineEnd + 32);
+		mouse(window, "mouseup", inlineEnd + 32);
 
-		expect(documentTransactions).toBe(1);
+		expect(transactions).toEqual([{ changed: true, handles: 0 }]);
 		expect(tableColumnWidths(editor, 0)).toEqual([160, 160]);
 		expect(editor.commands.undo()).toBe(true);
 		expect(tableColumnWidths(editor, 0)).toEqual([128, 128]);

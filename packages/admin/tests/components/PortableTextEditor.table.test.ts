@@ -361,7 +361,7 @@ describe("Table conversion: PortableText ↔ ProseMirror", () => {
 			expect(table.rows[0].cells[0].content[0].marks).toContain("strong");
 		});
 
-		it("converts table with links to PT (preserves markDefs)", () => {
+		it("converts table links without collapsing different targets for one URL", () => {
 			const pmDoc = {
 				type: "doc",
 				content: [
@@ -390,6 +390,11 @@ describe("Table conversion: PortableText ↔ ProseMirror", () => {
 															},
 														],
 													},
+													{
+														type: "text",
+														text: "Same tab",
+														marks: [{ type: "link", attrs: { href: "https://example.com" } }],
+													},
 												],
 											},
 										],
@@ -414,12 +419,17 @@ describe("Table conversion: PortableText ↔ ProseMirror", () => {
 
 			const cell = table.rows[0].cells[0];
 			expect(cell.markDefs).toBeDefined();
-			expect(cell.markDefs).toHaveLength(1);
+			expect(cell.markDefs).toHaveLength(2);
 			expect(cell.markDefs![0]._type).toBe("link");
 			expect(cell.markDefs![0].href).toBe("https://example.com");
 
 			const linkMarkKey = cell.markDefs![0]._key;
 			expect(cell.content[0].marks).toContain(linkMarkKey);
+			expect(
+				cell.content.map(
+					(span) => cell.markDefs?.find((mark) => span.marks?.includes(mark._key))?.blank,
+				),
+			).toEqual([true, false]);
 		});
 	});
 

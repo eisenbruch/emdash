@@ -5,7 +5,12 @@ import { useLingui } from "@lingui/react/macro";
 import * as Icons from "@phosphor-icons/react";
 import type { Editor, Range } from "@tiptap/core";
 import { closeHistory } from "@tiptap/pm/history";
-import { NodeSelection, TextSelection, type SelectionBookmark } from "@tiptap/pm/state";
+import {
+	NodeSelection,
+	TextSelection,
+	type SelectionBookmark,
+	type Transaction,
+} from "@tiptap/pm/state";
 import { CellSelection, cellAround } from "@tiptap/pm/tables";
 import { useEditorState } from "@tiptap/react";
 import * as React from "react";
@@ -32,7 +37,7 @@ const GROUPS: ReadonlyArray<readonly [MessageDescriptor, readonly Action[]]> = [
 const SIZES = Array.from({ length: 10 }, (_, index) => index + 1);
 const SIZE_ITEMS = Object.fromEntries(SIZES.map((size) => [String(size), size]));
 const MENU_CLASS =
-	"max-h-[calc(100dvh-1rem)] max-w-[calc(100vw-1rem)] overflow-y-auto text-sm motion-reduce:animate-none motion-reduce:transition-none";
+	"emdash-table-menu max-h-[min(28rem,50dvh)] max-w-[calc(100vw-1rem)] overflow-y-auto text-sm motion-reduce:animate-none motion-reduce:transition-none";
 
 export function insertTable(
 	editor: Editor,
@@ -205,9 +210,19 @@ export function TableSelectionAnnouncer({
 					t`${plural(state.rows, { one: "# row", other: "# rows" })} × ${plural(state.columns, { one: "# column", other: "# columns" })} selected`,
 				);
 		};
+		const announceDeletion = ({ transaction }: { transaction: Transaction }) => {
+			const rows: unknown = transaction.getMeta("emdashDeletedTableRows");
+			const columns: unknown = transaction.getMeta("emdashDeletedTableColumns");
+			if (typeof rows === "number")
+				onChange(plural(rows, { one: "Row deleted", other: "# rows deleted" }));
+			else if (typeof columns === "number")
+				onChange(plural(columns, { one: "Column deleted", other: "# columns deleted" }));
+		};
 		editor.on("selectionUpdate", announce);
+		editor.on("transaction", announceDeletion);
 		return () => {
 			editor.off("selectionUpdate", announce);
+			editor.off("transaction", announceDeletion);
 		};
 	}, [editor, onChange, t]);
 	return null;
@@ -299,6 +314,7 @@ function TableMenu({
 	const { t } = useLingui();
 	const triggerRef = React.useRef<HTMLButtonElement>(null);
 	const bookmarkRef = React.useRef<SelectionBookmark | null>(null);
+	const closingFocusRef = React.useRef<Element | null>(null);
 	const shortcutReturnRef = React.useRef(false);
 	const intentRef = React.useRef<CloseIntent | null>(null);
 	const pickerFrameRef = React.useRef(0);
@@ -320,14 +336,25 @@ function TableMenu({
 		intentRef.current = null;
 		shortcutReturnRef.current = false;
 	}, [editable]);
-	const restore = React.useCallback(() => {
-		try {
-			const bookmark = bookmarkRef.current;
-			if (bookmark)
-				editor.view.dispatch(editor.state.tr.setSelection(bookmark.resolve(editor.state.doc)));
-		} catch {}
-		editor.view.focus();
-	}, [editor]);
+	const restore = React.useCallback(
+		(restoreSelection = true) => {
+			const active = document.activeElement;
+			if (
+				editor.view.hasFocus() ||
+				(active !== document.body &&
+					active !== triggerRef.current &&
+					!closingFocusRef.current?.contains(active))
+			)
+				return;
+			try {
+				const bookmark = bookmarkRef.current;
+				if (restoreSelection && bookmark)
+					editor.view.dispatch(editor.state.tr.setSelection(bookmark.resolve(editor.state.doc)));
+			} catch {}
+			editor.view.focus();
+		},
+		[editor],
+	);
 	React.useEffect(() => {
 		if (more) return;
 		const focusTrigger = (event: KeyboardEvent) => {
@@ -355,7 +382,7 @@ function TableMenu({
 		intentRef.current = null;
 		if (intent === "picker")
 			pickerFrameRef.current = requestAnimationFrame(() => setPickerOpen(true));
-		else if (intent === "focus") editor.view.focus();
+		else if (intent === "focus") restore(false);
 		else if (intent === "restore") restore();
 	};
 	const title = more ? t`More table actions` : t`Table`;
@@ -364,6 +391,9 @@ function TableMenu({
 			<DropdownMenu
 				modal={false}
 				onOpenChange={(open, details) => {
+					if (!open)
+						closingFocusRef.current =
+							document.activeElement?.closest('[role="menu"], [role="dialog"]') ?? null;
 					if (open) {
 						bookmarkRef.current = editor.state.selection.getBookmark();
 						shortcutReturnRef.current = false;
@@ -379,6 +409,8 @@ function TableMenu({
 				<DropdownMenu.Trigger render={<Button ref={triggerRef} type="button" variant="ghost" shape={more ? "square" : undefined} className={more ? "h-8 w-8 pointer-coarse:h-11 pointer-coarse:w-11" : "h-8 min-w-11 flex-none gap-0.5 px-2 hover:bg-kumo-interact/50 pointer-coarse:min-h-11"} onMouseDown={more ? undefined : (event) => event.preventDefault()} onBlur={() => { shortcutReturnRef.current = false; }} aria-label={title} aria-expanded={menuOpen} aria-keyshortcuts={more ? undefined : "Alt+F10"} title={title} data-emdash-table-trigger={more ? undefined : ""}>{more ? <Icons.DotsThree className="h-4 w-4" aria-hidden="true" /> : <><Icons.Table className="h-4 w-4" aria-hidden="true" /><Icons.CaretDown className="h-3 w-3" aria-hidden="true" /></>}</Button>} />
 				<DropdownMenu.Content
 					align="start"
+					positionMethod="fixed"
+					collisionAvoidance={{ side: "shift", align: "shift", fallbackAxisSide: "none" }}
 					className={cn(MENU_CLASS, more ? "min-w-56" : "min-w-48")}
 				>
 					{/* prettier-ignore */}
@@ -386,7 +418,7 @@ function TableMenu({
 				</DropdownMenu.Content>
 			</DropdownMenu>
 			{/* prettier-ignore */}
-			{!more && <Popover modal={false} open={pickerOpen} onOpenChange={(open, details) => { setPickerOpen(open); if (!open && details.reason === "escape-key" && intentRef.current === null) intentRef.current = "restore"; }} onOpenChangeComplete={(open) => { if (open) return; const intent = intentRef.current; intentRef.current = null; if (intent === "focus") editor.view.focus(); else if (intent === "restore") restore(); }}><Popover.Content anchor={triggerRef} align="start" className="w-auto p-0 motion-reduce:animate-none motion-reduce:transition-none"><TableSizePicker onInsert={(rows, columns, header) => { if (insertTable(editor, rows, columns, header)) { intentRef.current = "focus"; setPickerOpen(false); onRun?.(t`Table inserted`); } }} onCancel={() => { intentRef.current = "restore"; setPickerOpen(false); }} /></Popover.Content></Popover>}
+			{!more && <Popover modal={false} open={pickerOpen} onOpenChange={(open, details) => { if (!open) closingFocusRef.current = document.activeElement?.closest('[role="menu"], [role="dialog"]') ?? null; setPickerOpen(open); if (!open && details.reason === "escape-key" && intentRef.current === null) intentRef.current = "restore"; }} onOpenChangeComplete={(open) => { if (open) return; const intent = intentRef.current; intentRef.current = null; if (intent === "focus") restore(false); else if (intent === "restore") restore(); }}><Popover.Content anchor={triggerRef} align="start" className="w-auto p-0 motion-reduce:animate-none motion-reduce:transition-none"><TableSizePicker onInsert={(rows, columns, header) => { if (insertTable(editor, rows, columns, header)) { intentRef.current = "focus"; setPickerOpen(false); onRun?.(t`Table inserted`); } }} onCancel={() => { closingFocusRef.current = document.activeElement?.closest('[role="dialog"]') ?? null; intentRef.current = "restore"; setPickerOpen(false); }} /></Popover.Content></Popover>}
 		</>
 	);
 }

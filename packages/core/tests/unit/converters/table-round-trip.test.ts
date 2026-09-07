@@ -41,6 +41,24 @@ const canonicalTable = {
 } satisfies PortableTextTableBlock;
 
 describe("Portable Text table conversion", () => {
+	it("keeps different targets for links sharing the same URL", () => {
+		const source: PortableTextTableBlock = structuredClone(canonicalTable);
+		source.markDefs!.push({ ...source.markDefs![0]!, _key: "new-tab", blank: true });
+		source.rows[0]!.cells[0]!.content.push({
+			_type: "span",
+			_key: "new-tab-span",
+			text: "New tab",
+			marks: ["new-tab"],
+		});
+		const [result] = prosemirrorToPortableText(portableTextToProsemirror([source]));
+		const cell = (result as PortableTextTableBlock).rows[0]!.cells[0]!;
+		expect(
+			cell.content.map(
+				(span) => cell.markDefs?.find((mark) => span.marks?.includes(mark._key))?.blank,
+			),
+		).toEqual([false, true]);
+	});
+
 	it("converts a canonical table to a real ProseMirror table without losing identity", () => {
 		const result = portableTextToProsemirror([canonicalTable]);
 

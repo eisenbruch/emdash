@@ -97,6 +97,15 @@ afterEach(() => {
 });
 
 describe("table clipboard", () => {
+	it("preserves hard breaks when copying ordinary text", () => {
+		const editor = createEditor();
+		editor.commands.setContent("<p>one<br>two</p>");
+		editor.commands.setTextSelection({ from: 1, to: 8 });
+		expect(editor.view.serializeForClipboard(editor.state.selection.content()).text).toBe(
+			"one\ntwo",
+		);
+	});
+
 	it.each([
 		["A\r", [["A"]]],
 		[
@@ -178,6 +187,25 @@ describe("table clipboard", () => {
 				(entry) => entry.type.spec.tableRole === "header_cell",
 			),
 		).toBe(true);
+	});
+
+	it.each([false, true])("rejects growth beyond the saved table limit (HTML: %s)", (html) => {
+		const value = content(101, 1);
+		const rows = value.content![0]!.content!;
+		for (const row of rows) row.content![0]!.attrs = { colspan: 100 };
+		rows.at(-1)!.content = content(1, 100).content![0]!.content![0]!.content;
+		const onRejected = vi.fn();
+		const editor = createEditor(value, vi.fn(), onRejected);
+		editor.commands.setTextSelection(positions(editor).at(-1)! + 2);
+		const before = editor.getJSON();
+		const selection = editor.state.selection;
+		const source = html
+			? new Slice(Fragment.from(createTable(editor.schema, 1, 100, false)), 0, 0)
+			: undefined;
+		expect(paste(editor, Array(100).fill("X").join("\t"), source)).toBe(true);
+		expect(onRejected).toHaveBeenCalledWith("too-large");
+		expect(editor.getJSON()).toEqual(before);
+		expect(editor.state.selection.eq(selection)).toBe(true);
 	});
 
 	it("pastes a smaller HTML table once at the top-start selected cell", () => {
