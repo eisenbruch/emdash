@@ -1115,12 +1115,16 @@ const HtmlBlockNode = Node.create({
 	},
 });
 
-const TableBlockNode = Node.create({
+const TableBlockNode = Node.create<{ placeholder: string }>({
 	name: "table",
 	group: "block",
 	atom: true,
 	selectable: true,
 	draggable: true,
+
+	addOptions() {
+		return { placeholder: "Table (edit in admin)" };
+	},
 
 	addAttributes() {
 		return {
@@ -1176,7 +1180,7 @@ const TableBlockNode = Node.create({
 				class: "emdash-plugin-block-placeholder",
 				contenteditable: "false",
 			}),
-			"Table (edit in admin)",
+			this.options.placeholder,
 		];
 	},
 });
@@ -2081,6 +2085,7 @@ export interface InlinePortableTextEditorProps {
 	collection: string;
 	entryId: string;
 	field: string;
+	tablePlaceholder?: string;
 }
 
 export function InlinePortableTextEditor({
@@ -2088,6 +2093,7 @@ export function InlinePortableTextEditor({
 	collection,
 	entryId,
 	field,
+	tablePlaceholder = TableBlockNode.options.placeholder,
 }: InlinePortableTextEditorProps) {
 	const initialRef = React.useRef(value);
 	const savingRef = React.useRef(false);
@@ -2265,7 +2271,7 @@ export function InlinePortableTextEditor({
 			}),
 			Typography,
 			HtmlBlockNode,
-			TableBlockNode,
+			TableBlockNode.configure({ placeholder: tablePlaceholder }),
 			PluginBlockNode,
 			slashCommandsExtension,
 		],

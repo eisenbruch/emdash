@@ -2,9 +2,12 @@
 
 import { Editor, type JSONContent } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
-import { afterEach, describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+	InlinePortableTextEditor,
 	_InlineTableBlockNode as InlineTableBlockNode,
 	_pmToPortableText as pmToPortableText,
 	_portableTextToPM as portableTextToPM,
@@ -45,6 +48,7 @@ const table = {
 
 const editors: Editor[] = [];
 const elements: HTMLElement[] = [];
+const roots: Root[] = [];
 
 function createEditor(content: JSONContent): Editor {
 	const element = document.createElement("div");
@@ -60,11 +64,30 @@ function createEditor(content: JSONContent): Editor {
 }
 
 afterEach(() => {
+	for (const root of roots.splice(0)) root.unmount();
 	for (const editor of editors.splice(0)) editor.destroy();
 	for (const element of elements.splice(0)) element.remove();
 });
 
 describe("inline editor table preservation", () => {
+	it("keeps table labels local to each editor", async () => {
+		const element = document.body.appendChild(document.createElement("div"));
+		elements.push(element);
+		const root = createRoot(element);
+		roots.push(root);
+		const labels = ["Table (edit in admin)", "جدول (التحرير في لوحة الإدارة)"];
+		const props = { value: [table], collection: "posts", entryId: "post-1", field: "body" };
+		root.render(
+			[undefined, labels[1]].map((tablePlaceholder, key) =>
+				createElement(InlinePortableTextEditor, { ...props, key, tablePlaceholder }),
+			),
+		);
+		await vi.waitFor(() => {
+			const nodes = element.querySelectorAll("[data-emdash-table-block]");
+			expect(Array.from(nodes, (node) => node.textContent)).toEqual(labels);
+		});
+	});
+
 	it("keeps the raw table when cutting its opaque placeholder", () => {
 		const editor = createEditor(portableTextToPM([table]));
 		editor.commands.setNodeSelection(0);

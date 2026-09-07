@@ -294,6 +294,8 @@ In edit mode, `{...entry.edit.title}` produces a `data-emdash-ref` attribute tha
 	injects a TipTap editor. For image fields, it opens a media library popover.
 </Aside>
 
+`PortableText` shows tables as read-only placeholders in edit mode. To localize their initial label, pass `tablePlaceholder={translatedLabel}`. It defaults to `"Table (edit in admin)"` and does not affect published table content.
+
 ### Styling inline code blocks
 
 Inline code blocks follow the system's light or dark appearance by default. If your site has its own theme switch, set these properties in its light and dark theme selectors:

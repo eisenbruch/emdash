@@ -4,9 +4,19 @@ import { describe, expect, it } from "vitest";
 
 import PortableText from "../../src/components/PortableText.astro";
 
-async function render(value: unknown[]) {
+async function render(value: unknown[], tablePlaceholder?: string) {
 	const container = await AstroContainer.create();
-	return container.renderToString(PortableText, { props: { value } });
+	container.addServerRenderer({
+		name: "@astrojs/react",
+		renderer: {
+			check: async () => false,
+			renderToStaticMarkup: async () => {
+				throw new Error("Expected a client-only editor");
+			},
+		},
+	});
+	container.addClientRenderer({ name: "@astrojs/react", entrypoint: "@astrojs/react/client.js" });
+	return container.renderToString(PortableText, { props: { value, tablePlaceholder } });
 }
 
 function tags(html: string, name: string): string[] {
@@ -14,6 +24,15 @@ function tags(html: string, name: string): string[] {
 }
 
 describe("Portable Text table rendering", () => {
+	it("forwards the localized table label to the inline editor island", async () => {
+		const value: unknown[] = [];
+		Object.defineProperty(value, Symbol.for("__emdash"), {
+			value: { collection: "posts", id: "localized", field: "body" },
+		});
+		const label = "جدول (التحرير في لوحة الإدارة)";
+		expect(await render(value, label)).toContain(label);
+	});
+
 	it("renders canonical headers, spans, widths, alignment, and inline marks", async () => {
 		const html = await render([
 			{
