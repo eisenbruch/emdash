@@ -3865,7 +3865,13 @@ function TableBubbleMenu({
 				}),
 			}}
 			shouldShow={({ editor: activeEditor, element, state, view }) => {
-				const hasEditorFocus = view.hasFocus() || element.contains(document.activeElement);
+				const activeElement = document.activeElement;
+				const triggerId = element.querySelector('[aria-expanded="true"]')?.id;
+				const hasMenuFocus = Boolean(
+					triggerId &&
+					activeElement?.closest('[role="menu"]')?.getAttribute("aria-labelledby") === triggerId,
+				);
+				const hasEditorFocus = view.hasFocus() || element.contains(activeElement) || hasMenuFocus;
 				return (
 					activeEditor.isEditable &&
 					hasEditorFocus &&

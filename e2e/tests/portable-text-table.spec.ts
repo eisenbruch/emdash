@@ -234,6 +234,52 @@ test.describe("Portable Text tables", () => {
 	});
 
 	for (const locale of ["en", "ar"]) {
+		test(`keeps contextual header controls anchored in ${locale} ${CROSS_ENGINE}`, async ({
+			admin,
+		}) => {
+			const { page } = admin;
+			await page
+				.context()
+				.addCookies([
+					{ name: "emdash-locale", value: locale, domain: "localhost", path: "/_emdash" },
+				]);
+			await openNewPost(admin, true);
+			await insertTable(page, 3, 3);
+			const toolbar = page.locator("#field-body [data-emdash-table-bubble-menu]");
+			const more = toolbar.getByRole("button").last();
+			await more.click();
+			const menu = page.locator('[role="menu"]:visible');
+			await expect(menu).toBeVisible();
+			for (const index of [0, 1, 0, 1]) {
+				const toggle = menu.getByRole("menuitemcheckbox").nth(index);
+				await toggle.scrollIntoViewIfNeeded();
+				const before = (await menu.boundingBox())!;
+				const scroll = await menu.evaluate((element) => element.scrollTop);
+				const checked = await toggle.getAttribute("aria-checked");
+				await toggle.click();
+				await expect(toggle).toHaveAttribute("aria-checked", checked === "true" ? "false" : "true");
+				await expect(more).toBeVisible();
+				const after = (await menu.boundingBox())!;
+				expect(after.x).toBeCloseTo(before.x, 0);
+				expect(after.y).toBeCloseTo(before.y, 0);
+				expect(await menu.evaluate((element) => element.scrollTop)).toBe(scroll);
+				const last = menu.getByRole("menuitem").last();
+				await page.keyboard.press("End");
+				await expect(last).toBeFocused();
+				expect(
+					await last.evaluate((element) => {
+						const bounds = element.getBoundingClientRect();
+						return element.contains(
+							document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2),
+						);
+					}),
+				).toBe(true);
+			}
+			await page.locator("#field-title").click();
+			await expect(menu).toHaveCount(0);
+			await expect(page.locator("#field-title")).toBeFocused();
+		});
+
 		test(`keeps the Table menu compact, aligned, and visibly highlighted in ${locale}`, async ({
 			admin,
 		}) => {

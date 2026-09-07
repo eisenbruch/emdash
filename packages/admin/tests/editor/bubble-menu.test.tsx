@@ -498,6 +498,29 @@ describe("Bubble Menu", () => {
 		expect(editor.state.selection.toJSON()).toEqual(before);
 	});
 
+	it.each([
+		["Toggle header row", "false"],
+		["Toggle header column", "true"],
+	])("keeps the contextual menu anchored after %s", async (name, checked) => {
+		const { screen, editor, pm } = await renderEditor({ value: tableValue }, 180);
+		await focusTableCell(editor, pm, "Body");
+		await waitForTableToolbar();
+		const trigger = screen.getByRole("button", { name: "More table actions" });
+		const anchor = trigger.element();
+		await userEvent.click(trigger);
+		const menu = screen.getByRole("menu", { name: "More table actions" });
+		await expect.element(menu).toBeVisible();
+		const toggle = screen.getByRole("menuitemcheckbox", { name });
+		await userEvent.click(toggle);
+		await expect.element(toggle).toHaveAttribute("aria-checked", checked);
+		expect(anchor.isConnected).toBe(true);
+		expect(anchor.getBoundingClientRect().width).toBeGreaterThan(0);
+		await expect.element(menu).toBeVisible();
+		await userEvent.keyboard("{Escape}");
+		await expect.element(menu).not.toBeInTheDocument();
+		await vi.waitFor(() => expect(document.activeElement).toBe(pm));
+	});
+
 	it("shows inline formatting buttons", async () => {
 		const { editor, pm } = await renderEditor();
 		await focusAndSelectAll(editor, pm);
