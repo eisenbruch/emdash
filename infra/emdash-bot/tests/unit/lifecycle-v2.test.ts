@@ -105,6 +105,21 @@ describe("maintainer-facing lifecycle", () => {
 		});
 	});
 
+	test("retries a failed PR revision as another revision", () => {
+		const decision = resolve({
+			labels: ["bot:bug", "bot:needs-attention"],
+			event: "retry",
+			actor: "maintainer",
+			retryMode: "revise",
+		});
+
+		expect(decision).toMatchObject({
+			kind: "transition",
+			to: "working",
+			action: "investigate.revise",
+		});
+	});
+
 	test("keeps legacy commands as deterministic aliases", () => {
 		expect(parseCommand("@emdashbot fix")).toEqual({ event: "work", arg: null });
 		expect(parseCommand("@emdashbot implement")).toEqual({ event: "work", arg: null });
