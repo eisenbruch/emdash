@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
 import { BylineRepository } from "../../../src/database/repositories/byline.js";
 import { ContentRepository } from "../../../src/database/repositories/content.js";
+import { OptionsRepository } from "../../../src/database/repositories/options.js";
 import { RedirectRepository } from "../../../src/database/repositories/redirect.js";
 import { TaxonomyRepository } from "../../../src/database/repositories/taxonomy.js";
 import type { Database } from "../../../src/database/types.js";
@@ -83,6 +84,61 @@ describe("applySeed", () => {
 				.executeTakeFirst();
 
 			expect(row?.value).toBe('"Test Site"');
+		});
+
+		it("should skip settings when any seeded site:* key already exists", async () => {
+			const options = new OptionsRepository(db);
+			await options.set("site:siteTitle", "Admin Title");
+
+			const seed: SeedFile = {
+				version: "1",
+				settings: {
+					siteTitle: "Seed Title",
+					tagline: "A seeded tagline",
+				},
+			};
+
+			const result = await applySeed(db, seed);
+
+			expect(result.settings.applied).toBe(0);
+			expect(await options.get("site:siteTitle")).toBe("Admin Title");
+			expect(await options.exists("site:tagline")).toBe(false);
+		});
+
+		it("should overwrite settings in update mode", async () => {
+			const options = new OptionsRepository(db);
+			await options.set("site:siteTitle", "Admin Title");
+
+			const seed: SeedFile = {
+				version: "1",
+				settings: {
+					siteTitle: "Seed Title",
+					tagline: "A seeded tagline",
+				},
+			};
+
+			const result = await applySeed(db, seed, { onConflict: "update" });
+
+			expect(result.settings.applied).toBe(2);
+			expect(await options.get("site:siteTitle")).toBe("Seed Title");
+			expect(await options.get("site:tagline")).toBe("A seeded tagline");
+		});
+
+		it("should throw in error mode when a seeded setting already exists", async () => {
+			const options = new OptionsRepository(db);
+			await options.set("site:tagline", "Admin Tagline");
+
+			const seed: SeedFile = {
+				version: "1",
+				settings: {
+					siteTitle: "Seed Title",
+					tagline: "A seeded tagline",
+				},
+			};
+
+			await expect(applySeed(db, seed, { onConflict: "error" })).rejects.toThrow(
+				'Conflict: site setting "site:tagline" already exists',
+			);
 		});
 	});
 
