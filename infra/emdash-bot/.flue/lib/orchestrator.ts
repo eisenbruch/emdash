@@ -1144,6 +1144,14 @@ export class OrchestratorDO extends DurableObject<Env> {
 		return this.runExclusive(() => this.processCleanupOnClose(anchorNumber));
 	}
 
+	getInstallationTokenForGitProxy(): Promise<string> {
+		return this.runExclusive(async () => {
+			const creds = readAppCreds(this.env);
+			if (!creds) throw new Error("GitHub App credentials are not configured");
+			return this.getInstallationToken(creds);
+		});
+	}
+
 	private async processCleanupOnClose(anchorNumber: number): Promise<CleanupOutcome> {
 		await this.ctx.storage.put(STORAGE.anchorNumber, anchorNumber);
 		const creds = readAppCreds(this.env);
