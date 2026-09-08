@@ -611,6 +611,7 @@ describe("ImageFieldRenderer", () => {
 			src: undefined,
 			previewUrl: undefined,
 			alt: "Cropped asset alt",
+			caption: "",
 			width: 900,
 			height: 600,
 			focalX: 0.4,

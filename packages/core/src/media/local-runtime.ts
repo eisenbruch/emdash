@@ -78,6 +78,7 @@ export const createMediaProvider: CreateMediaProviderFn<LocalMediaRuntimeConfig>
 					blurhash: item.blurhash ?? undefined,
 					dominantColor: item.dominantColor ?? undefined,
 					alt: item.alt ?? undefined,
+					caption: item.caption ?? undefined,
 					previewUrl: `/_emdash/api/media/file/${item.storageKey}`,
 					meta: {
 						storageKey: item.storageKey,
@@ -106,6 +107,7 @@ export const createMediaProvider: CreateMediaProviderFn<LocalMediaRuntimeConfig>
 				blurhash: item.blurhash ?? undefined,
 				dominantColor: item.dominantColor ?? undefined,
 				alt: item.alt ?? undefined,
+				caption: item.caption ?? undefined,
 				previewUrl: `/_emdash/api/media/file/${item.storageKey}`,
 				meta: {
 					storageKey: item.storageKey,

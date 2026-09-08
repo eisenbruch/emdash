@@ -27,6 +27,25 @@ describe("mediaItemToValue", () => {
 			dominantColor: "#aabbcc",
 		});
 	});
+
+	it("copies alt text and caption onto the MediaValue", () => {
+		const item: MediaProviderItem = {
+			id: "01ABC",
+			filename: "photo.jpg",
+			mimeType: "image/jpeg",
+			width: 1200,
+			height: 800,
+			alt: "A mountain at sunset",
+			caption: "Photo by Jordan Lee",
+		};
+
+		const value = mediaItemToValue("local", item);
+
+		expect(value).toMatchObject({
+			alt: "A mountain at sunset",
+			caption: "Photo by Jordan Lee",
+		});
+	});
 });
 
 describe("local provider getEmbed", () => {

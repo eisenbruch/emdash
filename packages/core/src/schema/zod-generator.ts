@@ -143,6 +143,7 @@ function getBaseSchema(type: FieldType, field: Pick<Field, "validation">): ZodTy
 				id: z.string(),
 				src: z.string().optional(),
 				alt: z.string().optional(),
+				caption: z.string().optional(),
 				width: z.number().optional(),
 				height: z.number().optional(),
 				filename: z.string().optional(),

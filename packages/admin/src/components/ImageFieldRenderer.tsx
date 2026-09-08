@@ -8,7 +8,16 @@
  * sub-fields) can reuse the same picker without a circular import.
  */
 
-import { Button, DropdownMenu, Label, LayerCard, Text, Tooltip } from "@cloudflare/kumo";
+import {
+	Button,
+	DropdownMenu,
+	Input,
+	InputArea,
+	Label,
+	LayerCard,
+	Text,
+	Tooltip,
+} from "@cloudflare/kumo";
 import { useLingui } from "@lingui/react/macro";
 import {
 	Image as ImageIcon,
@@ -47,6 +56,7 @@ export interface ImageFieldValue {
 	filename?: string;
 	mimeType?: string;
 	alt?: string;
+	caption?: string;
 	width?: number;
 	height?: number;
 	focalX?: number;
@@ -93,6 +103,7 @@ function mediaItemToImageFieldValue(item: MediaItem): ImageFieldValue {
 		focalY: item.focalY ?? undefined,
 		filename: item.filename,
 		mimeType: item.mimeType,
+		caption: item.caption || "",
 		blurhash: item.blurhash ?? metaString(item.meta, "blurhash"),
 		dominantColor: item.dominantColor ?? metaString(item.meta, "dominantColor"),
 		meta: isLocalProvider ? { ...item.meta, storageKey: item.storageKey } : item.meta,
@@ -450,6 +461,32 @@ export function ImageFieldRenderer({
 			</div>
 		) : null;
 
+	const metadataInputs = displayUrl ? (
+		<div className="grid gap-3">
+			<Input
+				label={t`Alt text`}
+				value={objectValue?.alt ?? ""}
+				onChange={(event) => {
+					if (!objectValue) return;
+					onChange({ ...objectValue, alt: event.target.value });
+				}}
+				placeholder={t`Describe the image for accessibility`}
+				className="w-full"
+			/>
+			<InputArea
+				label={t`Caption`}
+				value={objectValue?.caption ?? ""}
+				onChange={(event) => {
+					if (!objectValue) return;
+					onChange({ ...objectValue, caption: event.target.value });
+				}}
+				placeholder={t`Optional caption displayed with the image`}
+				rows={2}
+				className="w-full"
+			/>
+		</div>
+	) : null;
+
 	const featuredCard = displayUrl ? (
 		<LayerCard className="grid w-full grid-cols-[5rem_minmax(0,1fr)_auto] items-center rounded-xl p-0 sm:grid-cols-[12rem_minmax(0,1fr)] sm:items-stretch">
 			<div
@@ -541,6 +578,7 @@ export function ImageFieldRenderer({
 					</div>
 				</Button>
 			)}
+			{metadataInputs}
 			{darkVariantSlot}
 			<MediaPickerModal
 				open={pickerOpen}
