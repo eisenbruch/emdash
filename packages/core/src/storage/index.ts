@@ -19,6 +19,7 @@ export type {
 	SignedUploadUrl,
 	SignedUploadOptions,
 	CreateStorageFn,
+	ByteRange,
 } from "./types.js";
 
 export { EmDashStorageError } from "./types.js";

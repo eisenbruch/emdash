@@ -74,6 +74,15 @@ export interface UploadResult {
 }
 
 /**
+ * A single byte range. Both bounds are inclusive; `end` omitted means
+ * "from `start` to the end of the object".
+ */
+export interface ByteRange {
+	start: number;
+	end?: number;
+}
+
+/**
  * Download result
  */
 export interface DownloadResult {
@@ -81,8 +90,12 @@ export interface DownloadResult {
 	body: ReadableStream<Uint8Array>;
 	/** MIME type */
 	contentType: string;
-	/** File size in bytes */
+	/** File size in bytes (full size for non-range requests; range length for partial reads) */
 	size: number;
+	/** Total size of the full object, present when the response is a partial read. */
+	totalSize?: number;
+	/** The inclusive byte range actually returned, when serving a partial read. */
+	range?: ByteRange;
 }
 
 /**
@@ -165,9 +178,9 @@ export interface Storage {
 	}): Promise<UploadResult>;
 
 	/**
-	 * Download a file from storage
+	 * Download a file from storage. Optionally request a single byte range.
 	 */
-	download(key: string): Promise<DownloadResult>;
+	download(key: string, options?: { range?: ByteRange }): Promise<DownloadResult>;
 
 	/**
 	 * Delete a file from storage
@@ -211,6 +224,7 @@ export class EmDashStorageError extends Error {
 		message: string,
 		public code: string,
 		public override cause?: unknown,
+		public details?: Record<string, unknown>,
 	) {
 		super(message);
 		this.name = "EmDashStorageError";

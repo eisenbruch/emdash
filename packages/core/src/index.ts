@@ -208,6 +208,7 @@ export type {
 	LocalStorageConfig,
 	StorageDescriptor,
 	CreateStorageFn,
+	ByteRange,
 } from "./storage/types.js";
 export { EmDashStorageError } from "./storage/types.js";
 

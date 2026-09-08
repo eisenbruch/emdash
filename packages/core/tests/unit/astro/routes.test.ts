@@ -11,13 +11,29 @@ import {
 } from "../../../src/astro/integration/routes.js";
 import * as mediaUploadRoute from "../../../src/astro/routes/api/media/[id]/upload.js";
 import { GET as getMediaFile } from "../../../src/astro/routes/api/media/file/[...key].js";
+import { EmDashStorageError } from "../../../src/storage/types.js";
 
-function mockMediaContext(key: string | undefined) {
-	const download = vi.fn().mockResolvedValue({
+function mockMediaContext(
+	key: string | undefined,
+	rangeResult?: {
+		body: Uint8Array;
+		contentType: string;
+		size: number;
+		totalSize: number;
+		range: { start: number; end: number };
+	},
+) {
+	const fullResult = {
 		body: new Uint8Array([1, 2, 3]),
 		contentType: "image/png",
 		size: 3,
-	});
+	};
+
+	const download = vi.fn().mockImplementation(
+		(_key: string, options?: { range?: { start: number; end?: number } }) => {
+			return Promise.resolve(options?.range && rangeResult ? rangeResult : fullResult);
+		},
+	);
 
 	return {
 		context: {
@@ -27,6 +43,28 @@ function mockMediaContext(key: string | undefined) {
 					storage: { download },
 				},
 			},
+			request: new Request("https://example.com/_emdash/api/media/file/"),
+		} as Parameters<typeof getMediaFile>[0],
+		download,
+	};
+}
+
+function mockUnsatisfiableRangeContext(key: string | undefined, totalSize: number) {
+	const download = vi.fn().mockRejectedValue(
+		new EmDashStorageError("Range not satisfiable", "RANGE_NOT_SATISFIABLE", undefined, {
+			totalSize,
+		}),
+	);
+
+	return {
+		context: {
+			params: { key },
+			locals: {
+				emdash: {
+					storage: { download },
+				},
+			},
+			request: new Request("https://example.com/_emdash/api/media/file/"),
 		} as Parameters<typeof getMediaFile>[0],
 		download,
 	};
@@ -187,5 +225,59 @@ describe("media file catch-all route", () => {
 		const response = await getMediaFile(context);
 		expect(response.status).toBe(404);
 		expect(download).not.toHaveBeenCalled();
+	});
+});
+
+describe("media file range requests", () => {
+	it("returns 206 with Content-Range for a valid single byte range", async () => {
+		const { context, download } = mockMediaContext("video.mp4", {
+			body: new Uint8Array([1, 2]),
+			contentType: "video/mp4",
+			size: 2,
+			totalSize: 3,
+			range: { start: 0, end: 1 },
+		});
+
+		context.request = new Request("https://example.com/_emdash/api/media/file/video.mp4", {
+			headers: { Range: "bytes=0-1" },
+		});
+
+		const response = await getMediaFile(context);
+		expect(response.status).toBe(206);
+		expect(response.headers.get("Content-Range")).toBe("bytes 0-1/3");
+		expect(response.headers.get("Content-Length")).toBe("2");
+		expect(response.headers.get("Accept-Ranges")).toBe("bytes");
+		expect(download).toHaveBeenCalledWith("video.mp4", { range: { start: 0, end: 1 } });
+	});
+
+	it("returns 200 full response with Accept-Ranges when no Range header is sent", async () => {
+		const { context, download } = mockMediaContext("image.png");
+		const response = await getMediaFile(context);
+		expect(response.status).toBe(200);
+		expect(response.headers.get("Accept-Ranges")).toBe("bytes");
+		expect(download).toHaveBeenCalledWith("image.png");
+	});
+
+	it("ignores malformed Range headers and serves the full file", async () => {
+		const { context, download } = mockMediaContext("image.png");
+		context.request = new Request("https://example.com/_emdash/api/media/file/image.png", {
+			headers: { Range: "items=0-1" },
+		});
+
+		const response = await getMediaFile(context);
+		expect(response.status).toBe(200);
+		expect(response.headers.get("Content-Range")).toBeNull();
+		expect(download).toHaveBeenCalledWith("image.png");
+	});
+
+	it("returns 416 for an unsatisfiable range", async () => {
+		const { context } = mockUnsatisfiableRangeContext("image.png", 10);
+		context.request = new Request("https://example.com/_emdash/api/media/file/image.png", {
+			headers: { Range: "bytes=100-200" },
+		});
+
+		const response = await getMediaFile(context);
+		expect(response.status).toBe(416);
+		expect(response.headers.get("Content-Range")).toBe("bytes */10");
 	});
 });

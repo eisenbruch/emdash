@@ -20,6 +20,7 @@ import type {
 	ListOptions,
 	SignedUploadUrl,
 	SignedUploadOptions,
+	ByteRange,
 } from "emdash";
 import { EmDashStorageError } from "emdash";
 
@@ -65,9 +66,24 @@ export class R2Storage implements Storage {
 		}
 	}
 
-	async download(key: string): Promise<DownloadResult> {
+	async download(key: string, options?: { range?: ByteRange }): Promise<DownloadResult> {
 		try {
-			const object = await this.bucket.get(key);
+			const range = options?.range;
+			let r2Range: { offset: number; length?: number } | undefined;
+			let start = 0;
+
+			if (range) {
+				start = Math.max(0, range.start);
+				r2Range =
+					range.end === undefined
+						? { offset: start }
+						: { offset: start, length: range.end - start + 1 };
+			}
+
+			const object = await this.bucket.get(
+				key,
+				r2Range ? { range: r2Range } : undefined,
+			);
 
 			if (!object) {
 				throw new EmDashStorageError(`File not found: ${key}`, "NOT_FOUND");
@@ -78,10 +94,28 @@ export class R2Storage implements Storage {
 				throw new EmDashStorageError(`File not found: ${key}`, "NOT_FOUND");
 			}
 
+			const totalSize = object.size;
+			let end: number;
+			if (range) {
+				if (start >= totalSize) {
+					throw new EmDashStorageError(
+						`Range not satisfiable: ${key}`,
+						"RANGE_NOT_SATISFIABLE",
+						undefined,
+						{ totalSize },
+					);
+				}
+				end = range.end === undefined ? totalSize - 1 : Math.min(range.end, totalSize - 1);
+			} else {
+				end = totalSize - 1;
+			}
+
 			return {
 				body: object.body,
 				contentType: object.httpMetadata?.contentType || "application/octet-stream",
-				size: object.size,
+				size: end - start + 1,
+				totalSize,
+				...(range ? { range: { start, end } } : {}),
 			};
 		} catch (error) {
 			if (error instanceof EmDashStorageError) throw error;

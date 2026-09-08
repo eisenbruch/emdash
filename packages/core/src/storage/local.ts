@@ -25,6 +25,7 @@ import type {
 	ListOptions,
 	SignedUploadUrl,
 	SignedUploadOptions,
+	ByteRange,
 } from "./types.js";
 import { EmDashStorageError } from "./types.js";
 
@@ -107,7 +108,7 @@ export class LocalStorage implements Storage {
 		}
 	}
 
-	async download(key: string): Promise<DownloadResult> {
+	async download(key: string, options?: { range?: ByteRange }): Promise<DownloadResult> {
 		try {
 			const filePath = this.getFilePath(key);
 
@@ -116,7 +117,29 @@ export class LocalStorage implements Storage {
 			}
 
 			const stat = await fs.stat(filePath);
-			const nodeStream = createReadStream(filePath);
+			const totalSize = stat.size;
+			const range = options?.range;
+
+			let start = 0;
+			let end = totalSize - 1;
+
+			if (range) {
+				start = Math.max(0, range.start);
+				if (range.end !== undefined) {
+					end = Math.min(range.end, totalSize - 1);
+				}
+
+				if (start >= totalSize || start > end) {
+					throw new EmDashStorageError(
+						`Range not satisfiable: ${key}`,
+						"RANGE_NOT_SATISFIABLE",
+						undefined,
+						{ totalSize },
+					);
+				}
+			}
+
+			const nodeStream = createReadStream(filePath, { start, end });
 
 			// Convert Node.js stream to web ReadableStream
 			// Readable.toWeb returns ReadableStream (which is ReadableStream<unknown>),
@@ -133,7 +156,8 @@ export class LocalStorage implements Storage {
 			return {
 				body: webStream,
 				contentType,
-				size: stat.size,
+				size: end - start + 1,
+				...(range ? { totalSize, range: { start, end } } : {}),
 			};
 		} catch (error) {
 			if (error instanceof EmDashStorageError) throw error;

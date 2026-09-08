@@ -27,6 +27,7 @@ import type {
 	ListOptions,
 	SignedUploadUrl,
 	SignedUploadOptions,
+	ByteRange,
 } from "./types.js";
 import { EmDashStorageError } from "./types.js";
 
@@ -193,12 +194,21 @@ export class S3Storage implements Storage {
 		}
 	}
 
-	async download(key: string): Promise<DownloadResult> {
+	async download(key: string, options?: { range?: ByteRange }): Promise<DownloadResult> {
 		try {
+			const range = options?.range;
+			const rangeHeader =
+				range === undefined
+					? undefined
+					: range.end === undefined
+						? `bytes=${range.start}-`
+						: `bytes=${range.start}-${range.end}`;
+
 			const response = await this.client.send(
 				new GetObjectCommand({
 					Bucket: this.bucket,
 					Key: key,
+					...(rangeHeader ? { Range: rangeHeader } : {}),
 				}),
 			);
 
@@ -209,10 +219,31 @@ export class S3Storage implements Storage {
 			// Convert SDK stream to web ReadableStream
 			const body = response.Body.transformToWebStream();
 
+			let totalSize: number | undefined;
+			let responseRange: ByteRange | undefined;
+			// AWS SDK response types don't always expose ContentRange in the
+			// installed type declarations, but the header is present at runtime.
+			// eslint-disable-next-line typescript/no-unsafe-type-assertion -- accessing SDK header field
+			const contentRange = (response as { ContentRange?: string }).ContentRange;
+			if (contentRange) {
+				const match = contentRange.match(/^bytes (\d+)-(\d+)\/(\d+|\*)$/);
+				if (match) {
+					responseRange = {
+						start: parseInt(match[1] as string, 10),
+						end: parseInt(match[2] as string, 10),
+					};
+					if (match[3] !== "*") {
+						totalSize = parseInt(match[3] as string, 10);
+					}
+				}
+			}
+
 			return {
 				body,
 				contentType: response.ContentType || "application/octet-stream",
 				size: response.ContentLength || 0,
+				...(totalSize !== undefined ? { totalSize } : {}),
+				...(responseRange ? { range: responseRange } : {}),
 			};
 		} catch (error) {
 			if (
