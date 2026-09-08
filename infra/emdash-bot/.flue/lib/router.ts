@@ -258,7 +258,10 @@ export function resolve({
 	if (!from) return { kind: "noop", reason: "item has conflicting state labels" };
 	const t = findTransition(from, event);
 	if (!t) return { kind: "noop", reason: `no transition for ${from} + ${event}`, from };
-	const retry = from === "failed" && event === "retry" ? failedWriteRetry(retryMode) : null;
+	const retry =
+		(from === "failed" || from === "needs_attention") && event === "retry"
+			? failedWriteRetry(retryMode)
+			: null;
 	const to =
 		event === "resume" && resumeState
 			? resumeState
