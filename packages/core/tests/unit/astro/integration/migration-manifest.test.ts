@@ -42,6 +42,7 @@ describe("migration manifest integration", () => {
 		};
 		const astroConfig = {
 			root,
+			output: "server",
 			srcDir: new URL("src/", root),
 			security: {},
 			trailingSlash: "ignore",

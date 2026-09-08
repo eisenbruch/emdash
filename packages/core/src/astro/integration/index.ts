@@ -235,6 +235,32 @@ export function missingReactIntegrationWarning(
 	);
 }
 
+/**
+ * Warn when the host Astro config does not set `output: "server"`.
+ *
+ * EmDash injects dynamic API routes that are not statically prerenderable. With
+ * `output: "static"` the build fails during "prerendering static routes" with a
+ * cryptic `getStaticPaths()` error in a compiled route file the user never
+ * opened (#2947). Checked in `astro:config:done` so the inherited output value
+ * is resolved before any build work starts.
+ *
+ * @internal Exported for unit testing.
+ */
+export function missingServerOutputWarning(
+	output: string | undefined,
+): string | undefined {
+	if (output === "server") return undefined;
+	return (
+		`EmDash requires \`output: "server"\` in your Astro config. Current output mode is \`${output ?? "unset"}\`, ` +
+		`which causes injected dynamic routes to fail during static prerendering. ` +
+		`Update your config:\n\n` +
+		`  export default defineConfig({\n` +
+		`    output: "server",\n` +
+		`    integrations: [emdash({ ... })],\n` +
+		`  });`
+	);
+}
+
 // Terminal formatting
 const dim = (s: string) => `\x1b[2m${s}\x1b[22m`;
 const bold = (s: string) => `\x1b[1m${s}\x1b[22m`;
@@ -610,8 +636,11 @@ export function emdash(config: EmDashConfig = {}): AstroIntegration {
 				// port isn't known yet here. Nothing useful to print for build.
 			},
 			"astro:config:done": async ({ config: finalConfig, logger }) => {
-				const warning = missingReactIntegrationWarning(finalConfig.integrations);
-				if (warning) logger.warn(warning);
+				const reactWarning = missingReactIntegrationWarning(finalConfig.integrations);
+				if (reactWarning) logger.warn(reactWarning);
+
+				const outputWarning = missingServerOutputWarning(finalConfig.output);
+				if (outputWarning) logger.warn(outputWarning);
 
 				if (astroCommand !== "build" && astroCommand !== "sync") return;
 				if (!migrationMetadata.database) {
