@@ -259,7 +259,8 @@ export function resolve({
 	const t = findTransition(from, event);
 	if (!t) return { kind: "noop", reason: `no transition for ${from} + ${event}`, from };
 	const retry =
-		(from === "failed" || from === "needs_attention") && event === "retry"
+		event === "retry" &&
+		(from === "failed" || (from === "needs_attention" && retryMode === "revise"))
 			? failedWriteRetry(retryMode)
 			: null;
 	const to =
