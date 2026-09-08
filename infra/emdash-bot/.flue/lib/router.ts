@@ -85,9 +85,17 @@ const VERB_ALIASES: Record<string, EventId> = {
 	takeover: "take_over",
 	"hand back": "hand_back",
 	handback: "hand_back",
-	confirmed: "confirm",
-	verified: "confirm",
-	fixed: "confirm",
+	fix: "work",
+	implement: "work",
+	repro: "work",
+	revise: "work",
+	confirm: "accept",
+	confirmed: "accept",
+	verified: "accept",
+	fixed: "accept",
+	reject: "needs_changes",
+	"needs changes": "needs_changes",
+	resume: "retry",
 };
 
 /**
@@ -189,6 +197,12 @@ function failedWriteRetry(mode: InvestigationMode | undefined): {
 	action: string;
 } | null {
 	switch (mode) {
+		case "triage":
+			return { to: "triaging", action: "investigate.triage" };
+		case "work":
+			return { to: "working", action: "investigate.work" };
+		case "investigate":
+			return { to: "investigating", action: "investigate.diagnose" };
 		case "implement":
 		case "fix":
 			return { to: "fixing", action: `investigate.${mode}` };
@@ -352,6 +366,9 @@ export function replyFooter(state: StateId | null): string {
 }
 
 export interface AgentResult {
+	disposition?: "auto-work" | "needs-info" | "await-approval";
+	kind?: Kind;
+	labels?: readonly string[];
 	skipped?: boolean;
 	reproduced?: boolean;
 	rootCauseFound?: boolean;
@@ -389,13 +406,20 @@ export function outcomeFromResult({
 	if (result.skipped === true) return "agent.skipped";
 	if (result.verdict === "intended-behavior") return "agent.by_design";
 	const effectiveMode = mode ?? "repro";
-	if (effectiveMode === "diagnose") {
+	if (effectiveMode === "triage") {
+		if (result.disposition === "auto-work" && autoWorkAllowed(result)) return "agent.auto_work";
+		if (result.disposition === "needs-info") return "agent.needs_info";
+		return "agent.awaiting_approval";
+	}
+	if (effectiveMode === "diagnose" || effectiveMode === "investigate") {
 		if (result.verdict === "unclear") return "agent.needs_info";
 		if (result.reproduced === true) return "agent.reproduced";
 		return result.rootCauseFound === true ? "agent.diagnosed" : "agent.not_reproduced";
 	}
-	if (effectiveMode === "fix") {
-		return result.fixed === true && pushed === true ? "agent.fix_ready" : "agent.failed";
+	if (effectiveMode === "fix" || effectiveMode === "work") {
+		const delivered =
+			result.fixed === true || (effectiveMode === "work" && result.implemented === true);
+		return delivered && pushed === true ? "agent.fix_ready" : "agent.failed";
 	}
 	if (effectiveMode === "implement") {
 		return result.implemented === true && pushed === true ? "agent.fix_ready" : "agent.failed";
@@ -405,6 +429,13 @@ export function outcomeFromResult({
 	}
 	if (result.fixed === true) return pushed === true ? "agent.fix_ready" : "agent.failed";
 	return effectiveMode === "repro" ? "agent.reproduced" : "agent.failed";
+}
+
+const RESTRICTED_AUTO_WORK_LABELS: ReadonlySet<string> = new Set(["area/auth", "area/ci"]);
+
+function autoWorkAllowed(result: AgentResult): boolean {
+	if (result.kind === "enhancement") return false;
+	return !(result.labels ?? []).some((label) => RESTRICTED_AUTO_WORK_LABELS.has(label));
 }
 
 /** Invariant check: exactly one kind + one state label. */
