@@ -65,6 +65,14 @@ describe("OrchestratorDO (workers-pool)", () => {
 		vi.unstubAllGlobals();
 	});
 
+	test("serves the cached installation token to the sandbox Git proxy", async () => {
+		testEnv.GITHUB_APP_PRIVATE_KEY = "test-key-present";
+		const stub = testEnv.Orchestrator.getByName(uniqueIssueName());
+		await stub.debugSetTokenCache("cached-token", Date.now() + 60 * 60 * 1000);
+
+		await expect(stub.getInstallationTokenForGitProxy()).resolves.toBe("cached-token");
+	});
+
 	test("review revisions publish progress and completion on the PR and remain reviewable", async () => {
 		const requests: Array<{ method: string; url: string; body: string }> = [];
 		testEnv.GITHUB_APP_PRIVATE_KEY = "test-key-present";
