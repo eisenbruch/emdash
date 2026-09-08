@@ -222,6 +222,18 @@ describe("Sandbox container adapter", () => {
 
 		expect(bytes).toEqual(new TextEncoder().encode(content));
 	});
+
+	test("writes exact bytes over the HTTP transport without using a file stream", async () => {
+		const writeFile = vi.fn();
+		const sandbox = { writeFile } as unknown as Sandbox;
+		const bytes = new Uint8Array([0, 255, 1, 128]);
+
+		await fromSandbox(sandbox).writeFile("/tmp/candidate", bytes);
+
+		expect(writeFile).toHaveBeenCalledWith("/tmp/candidate", "AP8BgA==", {
+			encoding: "base64",
+		});
+	});
 });
 
 describe("ExecEnv container exec", () => {

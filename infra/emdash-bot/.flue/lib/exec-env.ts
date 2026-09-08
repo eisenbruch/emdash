@@ -924,6 +924,15 @@ function decodeBase64Bytes(encoded: string): Uint8Array {
 	return bytes;
 }
 
+function encodeBase64Bytes(bytes: Uint8Array): string {
+	const chunks: string[] = [];
+	const chunkSize = 32_768;
+	for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+		chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + chunkSize)));
+	}
+	return btoa(chunks.join(""));
+}
+
 function parseCandidatePaths(raw: string): string[] {
 	if (raw === "") return [];
 	const paths = raw.split("\0");
@@ -980,15 +989,7 @@ export function fromSandbox(sandbox: Sandbox): ContainerBackend {
 				await sandbox.writeFile(path, content);
 				return;
 			}
-			await sandbox.writeFile(
-				path,
-				new ReadableStream<Uint8Array>({
-					start(controller) {
-						controller.enqueue(content);
-						controller.close();
-					},
-				}),
-			);
+			await sandbox.writeFile(path, encodeBase64Bytes(content), { encoding: "base64" });
 		},
 		async readFileBytes(path) {
 			const { content } = await sandbox.readFile(path, { encoding: "base64" });

@@ -1003,7 +1003,10 @@ async function attachPublisherContainer(
 }
 
 function workspaceSandbox(id: string) {
-	return getSandbox(workerEnv.Sandbox, id, { sleepAfter: SANDBOX_SLEEP_AFTER_SECONDS });
+	return getSandbox(workerEnv.Sandbox, id, {
+		sleepAfter: SANDBOX_SLEEP_AFTER_SECONDS,
+		transport: "rpc",
+	});
 }
 
 async function recordBootstrapProgress(
