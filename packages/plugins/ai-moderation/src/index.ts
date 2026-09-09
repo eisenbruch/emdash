@@ -52,7 +52,7 @@ export function createPlugin(options: AIModerationOptions = {}): ResolvedPlugin 
 	return definePlugin({
 		id: "ai-moderation",
 		version: "0.1.0",
-		capabilities: [],
+		capabilities: ["users:read"],
 		allowedHosts: [],
 
 		admin: {
