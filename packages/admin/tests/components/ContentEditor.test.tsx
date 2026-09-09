@@ -518,6 +518,37 @@ describe("ContentEditor", () => {
 			await expect.element(toggle).toBeInTheDocument();
 		});
 
+		it("initialises boolean switches from defaultValue and saves the default", async () => {
+			const onSave = vi.fn();
+			const screen = await renderEditor({
+				isNew: true,
+				onSave,
+				fields: { featured: { kind: "boolean", label: "Featured", defaultValue: true } },
+			});
+
+			const toggle = screen.getByRole("switch");
+			await expect.element(toggle).toBeChecked();
+
+			await screen.getByRole("button", { name: "Save" }).first().click();
+			expect(onSave).toHaveBeenCalledWith(
+				expect.objectContaining({ data: expect.objectContaining({ featured: true }) }),
+			);
+		});
+
+		it("does not override existing item data with field defaults", async () => {
+			const screen = await renderEditor({
+				isNew: false,
+				item: makeItem({ data: { title: "Test", featured: false } }),
+				fields: {
+					title: { kind: "string", label: "Title", required: true },
+					featured: { kind: "boolean", label: "Featured", defaultValue: true },
+				},
+			});
+
+			const toggle = screen.getByRole("switch");
+			await expect.element(toggle).not.toBeChecked();
+		});
+
 		it("renders number fields as number inputs", async () => {
 			const screen = await renderEditor({
 				fields: { order: { kind: "number", label: "Order" } },

@@ -97,6 +97,25 @@ function resolveEditorBylines(item?: ContentItem | null): {
 	};
 }
 
+/**
+ * Build the initial form data for a new entry.
+ * Existing entries use the stored item data; new entries seed each field
+ * with its declared default value so untouched controls save correctly.
+ */
+function buildInitialFormData(
+	item: ContentItem | null | undefined,
+	fields: Record<string, FieldDescriptor>,
+): Record<string, unknown> {
+	if (item) return item.data;
+	const defaults: Record<string, unknown> = {};
+	for (const [name, field] of Object.entries(fields)) {
+		if (field.defaultValue !== undefined) {
+			defaults[name] = field.defaultValue;
+		}
+	}
+	return defaults;
+}
+
 import type { ContentSeoInput } from "../lib/api";
 import { findUnsupportedPortableTextMarks } from "../lib/portable-text-marks.js";
 import { MediaPickerModal } from "./MediaPickerModal";
@@ -118,6 +137,8 @@ export interface FieldDescriptor {
 	options?: Array<{ value: string; label: string }> | Record<string, unknown>;
 	widget?: string;
 	validation?: Record<string, unknown>;
+	/** Value the field should start with when creating a new entry. */
+	defaultValue?: unknown;
 }
 
 /** Simplified user info for current user context */
@@ -319,7 +340,9 @@ export function ContentEditor({
 		mq.addEventListener("change", onChange);
 		return () => mq.removeEventListener("change", onChange);
 	}, []);
-	const [formData, setFormData] = React.useState<Record<string, unknown>>(item?.data || {});
+	const [formData, setFormData] = React.useState<Record<string, unknown>>(() =>
+		buildInitialFormData(item, fields),
+	);
 	const [slug, setSlug] = React.useState(item?.slug || "");
 	const [slugTouched, setSlugTouched] = React.useState(!!item?.slug);
 	const [status, setStatus] = React.useState(item?.status || "draft");
@@ -368,7 +391,7 @@ export function ContentEditor({
 	// Track the last saved state to determine if dirty
 	const [lastSavedData, setLastSavedData] = React.useState<string>(
 		serializeEditorState({
-			data: item?.data || {},
+			data: buildInitialFormData(item, fields),
 			slug: item?.slug || "",
 			bylines: resolvedItemBylines.explicitCredits,
 		}),

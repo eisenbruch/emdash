@@ -163,6 +163,8 @@ export interface AdminManifest {
 					 */
 					options?: Array<{ value: string; label: string }> | Record<string, unknown>;
 					validation?: Record<string, unknown>;
+					/** Value the field should start with when creating a new entry. */
+					defaultValue?: unknown;
 				}
 			>;
 		}
