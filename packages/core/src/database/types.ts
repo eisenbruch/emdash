@@ -778,6 +778,16 @@ export interface ContentBylineTable {
 	sort_order: number;
 	role_label: string | null;
 	created_at: Generated<string>;
+	/**
+	 * Denormalized content-row metadata (added by migration 075). The loader's
+	 * pivot-drive branch filters and sorts by these values, then re-checks the
+	 * authoritative `ec_*` columns on the joined row.
+	 */
+	content_status: Generated<string | null>;
+	content_deleted_at: Generated<string | null>;
+	content_locale: Generated<string | null>;
+	content_published_at: Generated<string | null>;
+	content_created_at: Generated<string | null>;
 }
 
 // Byline custom fields (migration 041, Discussion #1174)

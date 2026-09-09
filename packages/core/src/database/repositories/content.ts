@@ -6,10 +6,11 @@ import { invalidateCollectionCache } from "../../object-cache/index.js";
 import { isIndexableFieldType, type FieldType } from "../../schema/types.js";
 import { buildFtsPrefixMatch, buildSlugGlobPrefix } from "../../search/match.js";
 import { chunks, SQL_BATCH_SIZE } from "../../utils/chunks.js";
-import { isMissingTableError } from "../../utils/db-errors.js";
+import { isMissingColumnError, isMissingTableError } from "../../utils/db-errors.js";
 import { slugify } from "../../utils/slugify.js";
 import type { Database } from "../types.js";
 import { validateIdentifier } from "../validate.js";
+import { BylineRepository } from "./byline.js";
 import { RevisionRepository } from "./revision.js";
 import type {
 	CreateContentInput,
@@ -317,6 +318,21 @@ function escapeRegExp(s: string): string {
  */
 export class ContentRepository {
 	constructor(private db: Kysely<Database>) {}
+
+	/**
+	 * Keep the denormalized `_emdash_content_bylines` columns in sync with
+	 * the authoritative `ec_*` row after a status/locale/deletion/publication
+	 * mutation. Best-effort: if the pivot table or columns are absent (old
+	 * migrations not yet applied) the update is a no-op.
+	 */
+	private async syncBylinePivots(type: string, id: string): Promise<void> {
+		try {
+			await new BylineRepository(this.db).syncContentBylinesMetadata(type, id);
+		} catch (error) {
+			if (isMissingTableError(error) || isMissingColumnError(error)) return;
+			throw error;
+		}
+	}
 
 	/**
 	 * Create a new content item
@@ -911,7 +927,10 @@ export class ContentRepository {
 			.where("deleted_at" as never, "is", null)
 			.execute();
 
-		if (hasColumnWrites) invalidateCollectionCache(type);
+		if (hasColumnWrites) {
+			invalidateCollectionCache(type);
+			await this.syncBylinePivots(type, id);
+		}
 
 		const updated = await this.findById(type, id);
 		if (!updated) {
@@ -1070,7 +1089,10 @@ export class ContentRepository {
 		`.execute(this.db);
 
 		const changed = (result.numAffectedRows ?? 0n) > 0n;
-		if (changed && liveMetadataChanged) invalidateCollectionCache(type);
+		if (changed && liveMetadataChanged) {
+			invalidateCollectionCache(type);
+			await this.syncBylinePivots(type, id);
+		}
 		return changed;
 	}
 
@@ -1091,6 +1113,7 @@ export class ContentRepository {
 		const changed = (result.numAffectedRows ?? 0n) > 0n;
 		if (changed) {
 			invalidateCollectionCache(type);
+			await this.syncBylinePivots(type, id);
 		}
 		return changed;
 	}
@@ -1113,6 +1136,7 @@ export class ContentRepository {
 		if (!restored) return null;
 
 		invalidateCollectionCache(type);
+		await this.syncBylinePivots(type, id);
 		return this.mapRow(type, restored);
 	}
 

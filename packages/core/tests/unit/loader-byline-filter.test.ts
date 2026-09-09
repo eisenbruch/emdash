@@ -55,9 +55,16 @@ describeEachDialect("Loader byline credit filter", (dialectName: DialectName) =>
 	/**
 	 * Insert an explicit byline credit. `bylineGroup` is the byline's
 	 * translation_group, matching what `_emdash_content_bylines.byline_id`
-	 * stores since migration 040.
+	 * stores since migration 040. The denormalized content columns (migration
+	 * 075) are populated from the credited row so the loader's pivot-drive
+	 * byline branch can seek them.
 	 */
 	async function credit(contentId: string, bylineGroup: string, sortOrder = 0) {
+		const content = await db
+			.selectFrom("ec_post" as never)
+			.select(["status", "locale", "deleted_at", "published_at", "created_at"])
+			.where("id", "=", contentId)
+			.executeTakeFirst();
 		await db
 			.insertInto("_emdash_content_bylines" as never)
 			.values({
@@ -66,6 +73,11 @@ describeEachDialect("Loader byline credit filter", (dialectName: DialectName) =>
 				content_id: contentId,
 				byline_id: bylineGroup,
 				sort_order: sortOrder,
+				content_status: content?.status ?? "published",
+				content_locale: content?.locale ?? "en",
+				content_deleted_at: content?.deleted_at ?? null,
+				content_published_at: content?.published_at ?? null,
+				content_created_at: content?.created_at ?? null,
 			} as never)
 			.execute();
 	}

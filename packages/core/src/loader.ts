@@ -1029,6 +1029,137 @@ export function buildTaxonomyPivotQuery(
 }
 
 /**
+ * Options for {@link buildBylinePivotQuery}.
+ */
+export interface BylinePivotQueryOptions {
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- any Kysely instance
+	db: Kysely<any>;
+	collection: string;
+	tableName: string;
+	bylineGroups: string[];
+	orderBy: OrderBySpec | undefined;
+	cursor: string | undefined;
+	locale: string | undefined;
+	status: string | undefined;
+	deletedIsNull: boolean;
+	fetchLimit: number | undefined;
+	offset: number | undefined;
+}
+
+/**
+ * Build the pivot-driven byline listing query (#2616).
+ *
+ * Drives from `_emdash_content_bylines`, which is keyed to a locale-specific
+ * content row, so the join is a direct `r.id = cb.content_id` — no
+ * translation_group indirection. Filter and sort columns are denormalized on
+ * the pivot (migration 075) so a selective byline can seek the index and short-
+ * circuit on `LIMIT` instead of walking the whole collection. The outer query re-
+ * checks the real predicates on the joined `ec_*` row.
+ *
+ * Two shapes mirror {@link buildTaxonomyPivotQuery}:
+ * - **Indexed sort** (`published_at`/`created_at`, single sort field): the
+ *   `LIMIT` lives in `picked`.
+ * - **Temp-sort** (`updated_at` or any other field, or multi-field sort): no
+ *   pivot sort index applies, so `picked` collects the candidate set and the
+ *   outer query sorts the joined rows.
+ */
+export function buildBylinePivotQuery(
+	opts: BylinePivotQueryOptions,
+): ReturnType<typeof sql<Record<string, unknown>>> {
+	const {
+		db,
+		collection,
+		tableName,
+		bylineGroups,
+		orderBy,
+		cursor,
+		locale,
+		status,
+		deletedIsNull,
+		fetchLimit,
+		offset,
+	} = opts;
+
+	const primary = getPrimarySort(orderBy);
+	const sortColumn = primary.field.includes(".") ? primary.field.split(".")[1]! : primary.field;
+	const validSortKeys = orderBy
+		? Object.keys(orderBy).filter((k) => FIELD_NAME_PATTERN.test(k))
+		: [];
+	const singleSort = validSortKeys.length <= 1;
+	const isIndexedSort =
+		singleSort && (sortColumn === "published_at" || sortColumn === "created_at");
+	const dir = primary.direction === "asc" ? sql`ASC` : sql`DESC`;
+	const cmp = primary.direction === "asc" ? sql.raw(">") : sql.raw("<");
+
+	const pivotContentJoin = isPostgres(db) ? sql`JOIN` : sql`CROSS JOIN`;
+	const {
+		terms: termsSelect,
+		bylines: bylinesSelect,
+		bylinesExist: bylinesExistSelect,
+	} = foldedHydrationSelects(db, collection, "r");
+	const booleanFieldsSelect = foldedBooleanFieldsSelect(db, collection);
+
+	const deletedR = deletedIsNull ? sql`r.deleted_at IS NULL` : sql`r.deleted_at IS NOT NULL`;
+	const deletedCb = deletedIsNull
+		? sql`cb.content_deleted_at IS NULL`
+		: sql`cb.content_deleted_at IS NOT NULL`;
+	const statusR = status !== undefined ? sql`AND ${buildStatusCondition(db, status, "r")}` : sql``;
+	const statusCb = status !== undefined ? sql`AND cb.content_status = ${status}` : sql``;
+	const localeR = locale ? sql`AND r.locale = ${locale}` : sql``;
+	const localeCb = locale ? sql`AND cb.content_locale = ${locale}` : sql``;
+
+	if (isIndexedSort) {
+		const sortRef = sql.ref(`cb.content_${sortColumn}`);
+		let cursorClause = sql``;
+		if (cursor) {
+			const { orderValue, id: cursorId } = decodeCursor(cursor);
+			cursorClause = sql`AND (${sortRef} ${cmp} ${orderValue} OR (${sortRef} = ${orderValue} AND cb.content_id ${cmp} ${cursorId}))`;
+		}
+		const limitClause = buildPivotLimitOffset(db, fetchLimit, offset);
+
+		return sql<Record<string, unknown>>`
+			WITH picked AS (
+				SELECT DISTINCT cb.content_id AS entry_id, ${sortRef} AS sortval
+				FROM _emdash_content_bylines AS cb
+				WHERE cb.collection_slug = ${collection}
+					AND cb.byline_id IN (${sql.join(bylineGroups.map((g) => sql`${g}`))})
+					AND ${deletedCb}
+					${statusCb}
+					${localeCb}
+					${cursorClause}
+				ORDER BY sortval ${dir}, cb.content_id ${dir}
+				${limitClause}
+			)
+			SELECT r.*, ${termsSelect}, ${bylinesSelect}, ${bylinesExistSelect}, ${booleanFieldsSelect}
+			FROM picked ${pivotContentJoin} ${sql.ref(tableName)} AS r ON r.id = picked.entry_id
+			WHERE ${deletedR} ${statusR} ${localeR}
+			ORDER BY picked.sortval ${dir}, picked.entry_id ${dir}
+		`;
+	}
+
+	const orderByClause = buildOrderByClause(orderBy, "r");
+	const cursorCond = cursor ? sql`AND ${buildCursorCondition(cursor, orderBy, "r")}` : sql``;
+	const limitClause = buildPivotLimitOffset(db, fetchLimit, offset);
+	return sql<Record<string, unknown>>`
+		WITH picked AS (
+			SELECT DISTINCT cb.content_id AS entry_id
+			FROM _emdash_content_bylines AS cb
+			WHERE cb.collection_slug = ${collection}
+				AND cb.byline_id IN (${sql.join(bylineGroups.map((g) => sql`${g}`))})
+				AND ${deletedCb}
+				${statusCb}
+				${localeCb}
+		)
+		SELECT r.*, ${termsSelect}, ${bylinesSelect}, ${bylinesExistSelect}, ${booleanFieldsSelect}
+		FROM picked ${pivotContentJoin} ${sql.ref(tableName)} AS r ON r.id = picked.entry_id
+		WHERE ${deletedR} ${statusR} ${localeR}
+			${cursorCond}
+		${orderByClause}
+		${limitClause}
+	`;
+}
+
+/**
  * Range filter for comparison operators on field values.
  * Values are compared as strings in the database. This works correctly for
  * ISO 8601 dates (e.g. "2024-01-01T00:00:00Z") because lexicographic ordering
@@ -1325,6 +1456,26 @@ export function emdashLoader(): LiveLoader<EntryData, EntryFilter, CollectionFil
 						// Public listings only ever want live content.
 						deletedIsNull: true,
 						bylineGroups: bylineFilter ? bylineFilter.groups : null,
+						fetchLimit,
+						offset,
+					}).execute(db);
+				} else if (bylineFilter && Object.keys(fieldFilters).length === 0) {
+					// Pivot-drive fast path (#2616): a byline-only filter seeks the
+					// denormalized `_emdash_content_bylines` pivot by byline group
+					// instead of scanning the whole collection and probing a
+					// correlated `EXISTS` per row. Combined byline+taxonomy is
+					// handled by the taxonomy pivot branch above; byline+field
+					// filters fall through to the single-table shape.
+					result = await buildBylinePivotQuery({
+						db,
+						collection: type,
+						tableName,
+						bylineGroups: bylineFilter.groups,
+						orderBy,
+						cursor,
+						locale,
+						status,
+						deletedIsNull: true,
 						fetchLimit,
 						offset,
 					}).execute(db);

@@ -1284,6 +1284,19 @@ export class BylineRepository {
 			.execute();
 		if (sourceRows.length === 0) return;
 
+		const targetMeta = await sql<{
+			status: string;
+			locale: string;
+			deleted_at: string | null;
+			published_at: string | null;
+			created_at: string;
+		}>`
+			SELECT status, locale, deleted_at, published_at, created_at
+			FROM ${sql.ref(tableName)}
+			WHERE id = ${targetContentId}
+		`.execute(this.db);
+		const meta = targetMeta.rows[0];
+
 		const now = new Date().toISOString();
 		await this.db
 			.insertInto("_emdash_content_bylines")
@@ -1296,6 +1309,11 @@ export class BylineRepository {
 					sort_order: row.sort_order,
 					role_label: row.role_label,
 					created_at: now,
+					content_status: meta?.status ?? null,
+					content_locale: meta?.locale ?? null,
+					content_deleted_at: meta?.deleted_at ?? null,
+					content_published_at: meta?.published_at ?? null,
+					content_created_at: meta?.created_at ?? null,
 				})),
 			)
 			.execute();
@@ -1371,6 +1389,23 @@ export class BylineRepository {
 			bylines.push({ ...item, group });
 		}
 
+		// Pull the content row's filter/sort columns so each new junction row
+		// carries the denormalized values the loader's pivot-drive branch
+		// seeks on (migration 075). This is advisory — the read path re-checks
+		// the authoritative columns on the joined `ec_*` row.
+		const meta = await sql<{
+			status: string;
+			locale: string;
+			deleted_at: string | null;
+			published_at: string | null;
+			created_at: string;
+		}>`
+			SELECT status, locale, deleted_at, published_at, created_at
+			FROM ${sql.ref(tableName)}
+			WHERE id = ${contentId}
+		`.execute(this.db);
+		const contentMeta = meta.rows[0];
+
 		// This method is expected to be called within a transaction context
 		// (content handlers wrap in withTransaction, seed applies sequentially).
 		// All operations use this.db directly -- callers are responsible for
@@ -1394,6 +1429,11 @@ export class BylineRepository {
 					sort_order: i,
 					role_label: item.roleLabel ?? null,
 					created_at: new Date().toISOString(),
+					content_status: contentMeta?.status ?? null,
+					content_locale: contentMeta?.locale ?? null,
+					content_deleted_at: contentMeta?.deleted_at ?? null,
+					content_published_at: contentMeta?.published_at ?? null,
+					content_created_at: contentMeta?.created_at ?? null,
 				})
 				.execute();
 		}
@@ -1409,5 +1449,30 @@ export class BylineRepository {
 		invalidateCollectionCache(collectionSlug);
 
 		return await this.getContentBylines(collectionSlug, contentId);
+	}
+
+	/**
+	 * Synchronize the denormalized content columns on `_emdash_content_bylines`
+	 * for one entry after its status, locale, deletion state, or publication
+	 * dates change. Callers are responsible for running this inside the same
+	 * transaction as the content mutation when atomicity matters.
+	 */
+	async syncContentBylinesMetadata(collectionSlug: string, contentId: string): Promise<void> {
+		validateIdentifier(collectionSlug, "collection slug");
+		const tableName = `ec_${collectionSlug}`;
+		validateIdentifier(tableName, "content table");
+
+		await sql`
+			UPDATE _emdash_content_bylines AS cb
+			SET content_status = r.status,
+				content_locale = r.locale,
+				content_deleted_at = r.deleted_at,
+				content_published_at = r.published_at,
+				content_created_at = r.created_at
+			FROM ${sql.ref(tableName)} AS r
+			WHERE cb.collection_slug = ${collectionSlug}
+				AND cb.content_id = ${contentId}
+				AND r.id = cb.content_id
+		`.execute(this.db);
 	}
 }
