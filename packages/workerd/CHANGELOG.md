@@ -1,5 +1,14 @@
 # @emdash-cms/sandbox-workerd
 
+## 0.5.4
+
+### Patch Changes
+
+- [#2967](https://github.com/emdash-cms/emdash/pull/2967) [`c531f30`](https://github.com/emdash-cms/emdash/commit/c531f300dce8edf948fb565d07576ce21ef75aa9) Thanks [@danielmlr](https://github.com/danielmlr)! - Fixes the workerd plugin sandbox logging `Plugins will run unsandboxed` after it stops restarting a repeatedly crashing `workerd`, when in fact every sandboxed hook and route fails from that point. The log line now names that consequence, and the reason on `SandboxUnavailableError` distinguishes a spent crash budget from a runner that never started.
+
+- Updated dependencies [[`f9ac286`](https://github.com/emdash-cms/emdash/commit/f9ac286f5a8582809f997aff2999e8a2881c0d74)]:
+  - emdash@0.37.1
+
 ## 0.5.3
 
 ### Patch Changes

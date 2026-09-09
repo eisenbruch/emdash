@@ -1,5 +1,19 @@
 # emdash
 
+## 0.37.1
+
+### Patch Changes
+
+- [#2970](https://github.com/emdash-cms/emdash/pull/2970) [`f9ac286`](https://github.com/emdash-cms/emdash/commit/f9ac286f5a8582809f997aff2999e8a2881c0d74) Thanks [@jakevis](https://github.com/jakevis)! - Fixes visual editing on list pages. Entries from `getEmDashCollection` now carry a working `edit` proxy in edit mode, so spreading `{...entry.edit.title}` renders the annotation and the toolbar makes the element editable. Previously every collection entry received a no-op proxy in every mode, so only pages built from `getEmDashEntry` were click-to-edit — fields shown exclusively in a list, and collections with no detail page, could not be edited on the page at all.
+
+- Updated dependencies [[`5f51e55`](https://github.com/emdash-cms/emdash/commit/5f51e550827e0e42c8118e0c1279faa69cb1deb1), [`4cc150e`](https://github.com/emdash-cms/emdash/commit/4cc150e931313644a96b796627e5ec74b46c0aec)]:
+  - @emdash-cms/admin@0.37.1
+  - @emdash-cms/registry-lexicons@0.5.0
+  - @emdash-cms/registry-client@0.5.1
+  - @emdash-cms/registry-verification@0.3.1
+  - @emdash-cms/auth@0.37.1
+  - @emdash-cms/gutenberg-to-portable-text@0.37.1
+
 ## 0.37.0
 
 ### Minor Changes

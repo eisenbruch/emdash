@@ -1,5 +1,12 @@
 # @emdash-cms/registry-verification
 
+## 0.3.1
+
+### Patch Changes
+
+- Updated dependencies [[`4cc150e`](https://github.com/emdash-cms/emdash/commit/4cc150e931313644a96b796627e5ec74b46c0aec)]:
+  - @emdash-cms/registry-lexicons@0.5.0
+
 ## 0.3.0
 
 ### Minor Changes

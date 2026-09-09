@@ -1,5 +1,15 @@
 # @emdash-cms/perf-demo-site
 
+## 0.0.41
+
+### Patch Changes
+
+- Updated dependencies [[`f9ac286`](https://github.com/emdash-cms/emdash/commit/f9ac286f5a8582809f997aff2999e8a2881c0d74)]:
+  - emdash@0.37.1
+  - @emdash-cms/plugin-cli@0.10.1
+  - @emdash-cms/cloudflare@0.37.1
+  - @emdash-cms/plugin-webhook-notifier@0.2.0
+
 ## 0.0.40
 
 ### Patch Changes

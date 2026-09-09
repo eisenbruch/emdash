@@ -1,5 +1,16 @@
 # @emdash-cms/admin
 
+## 0.37.1
+
+### Patch Changes
+
+- [#2979](https://github.com/emdash-cms/emdash/pull/2979) [`5f51e55`](https://github.com/emdash-cms/emdash/commit/5f51e550827e0e42c8118e0c1279faa69cb1deb1) Thanks [@ascorbic](https://github.com/ascorbic)! - Improves passkey account creation with device-aware guidance before the browser prompt. EmDash explains what a passkey is and where it is saved, detects when a built-in authenticator is unavailable, and guides users through Windows Hello, another device, or a security key. Compatible browsers receive a preference for the selected path, while the browser continues to control the secure passkey prompt.
+
+- Updated dependencies [[`4cc150e`](https://github.com/emdash-cms/emdash/commit/4cc150e931313644a96b796627e5ec74b46c0aec)]:
+  - @emdash-cms/registry-lexicons@0.5.0
+  - @emdash-cms/registry-client@0.5.1
+  - @emdash-cms/blocks@0.37.1
+
 ## 0.37.0
 
 ### Minor Changes
