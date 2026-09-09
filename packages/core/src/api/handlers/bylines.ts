@@ -181,6 +181,25 @@ export async function handleBylineCreate(
 			}
 		}
 
+		// User-link guard: the partial unique on (user_id, locale) permits
+		// one byline per user per locale. Detect collisions up front so
+		// translations that inherit a source userId return a friendly 409
+		// instead of a raw constraint failure.
+		if (input.userId) {
+			const existingUserByline = await repo.findByUserId(input.userId, {
+				locale: effectiveLocale,
+			});
+			if (existingUserByline) {
+				return {
+					success: false,
+					error: {
+						code: "CONFLICT",
+						message: `A byline for this user already exists in locale "${effectiveLocale}"`,
+					},
+				};
+			}
+		}
+
 		// Duplicate guard: same (slug, locale) — matches the DB unique key
 		// from migration 040.
 		const existing = await repo.findBySlug(input.slug, { locale: effectiveLocale });

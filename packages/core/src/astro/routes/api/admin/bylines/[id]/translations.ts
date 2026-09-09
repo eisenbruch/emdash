@@ -74,11 +74,10 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
 			bio: body.bio ?? null,
 			avatarMediaId: body.avatarMediaId ?? source.avatarMediaId,
 			websiteUrl: body.websiteUrl ?? source.websiteUrl,
-			// Translations don't inherit the source's user_id or guest flag —
-			// the partial unique on (user_id, locale) means a single user can
-			// own one byline per locale, but the editor must opt into linking
-			// the new row by editing it after creation.
-			userId: null,
+			// Inherit the source's user link so author-inferred credits keep
+			// resolving at the new locale. A CONFLICT is returned when the
+			// user already owns a different byline at the target locale.
+			userId: source.userId,
 			isGuest: source.isGuest,
 			locale: body.locale,
 			translationOf: id,
