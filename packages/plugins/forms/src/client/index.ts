@@ -47,6 +47,11 @@ export function initForms() {
 		document.querySelectorAll<HTMLFormElement>("[data-ec-form]").forEach((form) => {
 			if (form.dataset.ecInitialized) return;
 			form.dataset.ecInitialized = "1";
+			// Hand validation to this script now that it is running. Native constraint validation blocks the submit
+			// event before handleSubmit can reach it, so the field errors below never render and the [data-error-for]
+			// spans stay empty. Set here rather than in the markup so a reader without JavaScript keeps the browser's
+			// own validation; validateVisibleFields() then applies the same checkValidity() rules and messages.
+			form.noValidate = true;
 			restoreState(form);
 			initMultiPage(form);
 			initConditions(form);
