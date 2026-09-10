@@ -11,7 +11,7 @@ import { initForms } from "../src/client/index.js";
 
 function embed(html: string): HTMLFormElement[] {
 	document.body.innerHTML = html;
-	return Array.from(document.querySelectorAll<HTMLFormElement>("[data-ec-form]"));
+	return [...document.querySelectorAll<HTMLFormElement>("[data-ec-form]")];
 }
 
 describe("initForms", () => {
