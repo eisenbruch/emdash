@@ -35,9 +35,9 @@ vi.mock("../src/public-definition.js", () => ({
 	loadPublicFormDefinition: () => Promise.resolve(definition),
 }));
 
-const idsIn = (html: string): string[] => [...html.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]);
+const idsIn = (html: string): string[] => Array.from(html.matchAll(/\sid="([^"]+)"/g), (m) => m[1]);
 const labelTargetsIn = (html: string): string[] =>
-	[...html.matchAll(/<label[^>]*\sfor="([^"]+)"/g)].map((m) => m[1]);
+	Array.from(html.matchAll(/<label[^>]*\sfor="([^"]+)"/g), (m) => m[1]);
 
 describe("FormEmbed element ids", () => {
 	let first: string;
