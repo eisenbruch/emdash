@@ -185,7 +185,7 @@ export async function fetchContentList(
 		includeInferredBylines?: boolean;
 		/**
 		 * Taxonomy term slugs keyed by taxonomy name. An entry matches any slug
-		 * within a taxonomy and every taxonomy named — OR within, AND across.
+		 * within a taxonomy and every taxonomy named: OR within, AND across.
 		 */
 		termFilters?: Record<string, string[]>;
 	},
