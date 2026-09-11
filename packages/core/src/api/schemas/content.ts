@@ -136,9 +136,7 @@ export const contentTermFiltersSchema = z
 			.string()
 			.max(63)
 			.regex(/^[a-z][a-z0-9_]*$/, "must be a safe taxonomy name"),
-		z
-			.array(z.string().min(1).max(200))
-			.min(1, "a taxonomy filter needs at least one term slug"),
+		z.array(z.string().min(1).max(200)).min(1, "a taxonomy filter needs at least one term slug"),
 	)
 	.refine((filters) => Object.keys(filters).length <= 10, {
 		message: "At most 10 taxonomy filters are allowed",
