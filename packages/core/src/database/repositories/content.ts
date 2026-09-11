@@ -1,7 +1,11 @@
 import { sql, type Kysely } from "kysely";
 import { ulid } from "ulidx";
 
-import type { ContentFieldFilterValue, ContentFieldFilters, ContentTermFilters } from "../../content-list-query.js";
+import type {
+	ContentFieldFilterValue,
+	ContentFieldFilters,
+	ContentTermFilters,
+} from "../../content-list-query.js";
 import { invalidateCollectionCache } from "../../object-cache/index.js";
 import { isIndexableFieldType, type FieldType } from "../../schema/types.js";
 import { buildFtsPrefixMatch, buildSlugGlobPrefix } from "../../search/match.js";
