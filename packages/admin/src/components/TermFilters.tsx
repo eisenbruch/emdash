@@ -18,10 +18,7 @@ export const EMPTY_TERM_FILTER: TermFilterState = {};
 
 /** Depth-first flatten so a hierarchical taxonomy reads as an indented list. */
 function flatten(terms: TaxonomyTerm[], depth = 0): Array<{ term: TaxonomyTerm; depth: number }> {
-	return terms.flatMap((term) => [
-		{ term, depth },
-		...flatten(term.children ?? [], depth + 1),
-	]);
+	return terms.flatMap((term) => [{ term, depth }, ...flatten(term.children ?? [], depth + 1)]);
 }
 
 /**
