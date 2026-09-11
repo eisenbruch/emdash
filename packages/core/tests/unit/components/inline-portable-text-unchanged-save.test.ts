@@ -108,6 +108,11 @@ describe("inline Portable Text editor saves", () => {
 	type TestEditor = {
 		commands: { insertContentAt: (pos: number, text: string) => boolean; undo: () => boolean };
 	};
+	// The component does not expose its editor, and @tiptap/react has no
+	// public way to reach it from the DOM, so this uses the instance Tiptap's
+	// core attaches to its view's root element (`view.dom.editor`). The
+	// alternative, synthesizing input events for ProseMirror in jsdom, is less
+	// reliable than the internal it would avoid.
 	function editorOf(editable: HTMLElement): TestEditor {
 		const editor = (editable as HTMLElement & { editor?: TestEditor }).editor;
 		expect(editor).toBeDefined();

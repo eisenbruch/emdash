@@ -2096,11 +2096,9 @@ export function InlinePortableTextEditor({
 	tablePlaceholder = TableBlockNode.options.placeholder,
 }: InlinePortableTextEditorProps) {
 	const initialRef = React.useRef(value);
-	// The editor document as last known to be stored: the one the loaded
-	// content produced, then whatever each successful save sent. Saves compare
-	// against it structurally. Comparing serialized Portable Text against the
-	// raw `value` never matched, because serialization mints new `_key`s on
-	// every call, so every blur and every page leave saved a new draft.
+	// The editor document last known to be stored: the one the loaded content
+	// produced, then the one each successful save sent. `save()` does nothing
+	// while the current document is structurally equal to it (`Node.eq`).
 	const savedDocRef = React.useRef<Editor["state"]["doc"] | null>(null);
 	const savingRef = React.useRef(false);
 	const editorRef = React.useRef<ReturnType<typeof useEditor>>(null);
