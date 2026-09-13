@@ -49,7 +49,10 @@ describe("inline Portable Text editor saves", () => {
 				const url =
 					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 				if (init?.method === "PUT") {
-					puts.push({ url, body: typeof init.body === "string" ? JSON.parse(init.body) : init.body });
+					puts.push({
+						url,
+						body: typeof init.body === "string" ? JSON.parse(init.body) : init.body,
+					});
 				}
 				return Response.json({ data: {} });
 			}),
