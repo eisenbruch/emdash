@@ -5798,6 +5798,9 @@ export class EmDashRuntime {
 						: await normalizeMediaValue(value, getProvider);
 				if (normalized) {
 					result[field.slug] = normalized;
+				} else if (isBlankString(value)) {
+					// `null` is the canonical "no media"; the field schema rejects `""`.
+					result[field.slug] = null;
 				}
 			} catch {
 				// Don't fail the save if normalization fails for a single field
@@ -5825,6 +5828,8 @@ export class EmDashRuntime {
 							const normalized = await normalizeImageValue(subValue, getProvider);
 							if (normalized) {
 								normalizedItem[slug] = normalized;
+							} else if (isBlankString(subValue)) {
+								normalizedItem[slug] = null;
 							}
 						} catch {
 							// Don't fail the save if normalization fails for a single sub-field
@@ -6245,6 +6250,10 @@ export class EmDashRuntime {
 		const status = this.pluginStates.get(pluginId);
 		return status === undefined || status === "active";
 	}
+}
+
+function isBlankString(value: unknown): boolean {
+	return typeof value === "string" && value.trim() === "";
 }
 
 /**
