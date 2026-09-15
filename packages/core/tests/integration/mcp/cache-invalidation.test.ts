@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { menuTag, siteSettingsTag, taxonomyTag } from "../../../src/cache/chrome-tags.js";
 import type { Database } from "../../../src/database/types.js";
+import { SchemaRegistry } from "../../../src/schema/registry.js";
 import {
 	connectMcpHarness,
 	currentRev,
@@ -156,6 +157,38 @@ describe("MCP write tools invalidate the route cache", () => {
 		});
 		expect(result.isError).toBe(true);
 		expect(invalidate).not.toHaveBeenCalled();
+	});
+
+	it("content_update with a status still invalidates when its second step fails after changing live content", async () => {
+		// Without revisions, the update step writes the live row directly.
+		const registry = new SchemaRegistry(db);
+		await registry.createCollection({ slug: "note", label: "Notes", supports: ["drafts"] });
+		await registry.createField("note", { slug: "title", label: "Title", type: "string" });
+		const created = await harness.client.callTool({
+			name: "content_create",
+			arguments: { collection: "note", data: { title: "Before" } },
+		});
+		expect(created.isError, extractText(created)).toBeFalsy();
+		const id = extractJson<{ item: { id: string } }>(created).item.id;
+		invalidate.mockClear();
+
+		harness.handlers.handleContentPublish = async () => ({
+			success: false,
+			error: { code: "PUBLISH_FAILED", message: "publish failed" },
+		});
+		const result = await harness.client.callTool({
+			name: "content_update",
+			arguments: {
+				collection: "note",
+				id,
+				data: { title: "After" },
+				status: "published",
+				_rev: await currentRev(harness.client, "note", id),
+			},
+		});
+
+		expect(result.isError).toBe(true);
+		expect(invalidatedTags(invalidate)).toEqual([["note", id]]);
 	});
 
 	it("taxonomy, menu and settings tools invalidate their chrome tags", async () => {
