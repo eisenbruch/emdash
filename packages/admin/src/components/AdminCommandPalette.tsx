@@ -25,7 +25,11 @@ import {
 	getTaxonomyNavIcon,
 	resolveNavIcon,
 } from "./admin-navigation-icons.js";
-import { resolvePluginPageLabel, visibleCollectionEntries } from "./Sidebar.js";
+import {
+	declaredLabelTranslator,
+	resolvePluginPageLabel,
+	visibleCollectionEntries,
+} from "./Sidebar.js";
 
 /** Subset of manifest fields used by the palette (matches `Shell` props shape). */
 type CommandPaletteManifest = {
@@ -341,8 +345,8 @@ export function AdminCommandPalette({ manifest }: AdminCommandPaletteProps) {
 
 	// Build navigation items
 	const allNavItems = React.useMemo(
-		() => buildNavItems(manifest, userRole, translateDynamic),
-		[manifest, userRole, translateDynamic, i18n.locale],
+		() => buildNavItems(manifest, userRole, declaredLabelTranslator(i18n, translateDynamic)),
+		[manifest, userRole, translateDynamic, i18n, i18n.locale],
 	);
 
 	// Filter nav items based on query
