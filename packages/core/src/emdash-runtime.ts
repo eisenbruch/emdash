@@ -30,6 +30,7 @@ import type { EmDashManifest } from "./astro/types.js";
 import { getAuthMode } from "./auth/mode.js";
 import { getTrustedProxyHeaders } from "./auth/trusted-proxy.js";
 import type { ContentFieldFilters } from "./content-list-query.js";
+import { keepKnownFields, staleStoredKeys } from "./content/known-fields.js";
 import { isSqlite } from "./database/dialect-helpers.js";
 import { kyselyLogOption } from "./database/instrumentation.js";
 import {
@@ -94,6 +95,7 @@ import type {
 } from "./plugins/types.js";
 import { recordSchedulerHeartbeatSafely } from "./scheduler-health.js";
 import { primeRegisteredCollections } from "./schema/collection-slugs-cache.js";
+import type { CollectionWithFields } from "./schema/types.js";
 import { isMissingTableError } from "./utils/db-errors.js";
 import { hashString } from "./utils/hash.js";
 import { createInitLock, type InitLock, initWithLock } from "./utils/init-lock.js";
@@ -3054,6 +3056,13 @@ export class EmDashRuntime {
 		}
 		const { _rev: _discardedRev, actor: _discardedActor, ...bodyWithoutRev } = body;
 
+		// Loaded once and threaded through normalization, the stale-key drop and the draft
+		// merge below: each of those needs the field list and the registry does not cache.
+		const collectionInfo = bodyWithoutRev.data
+			? await this.schemaRegistry.getCollectionWithFields(collection).catch(() => null)
+			: null;
+		const knownFieldSlugs = new Set((collectionInfo?.fields ?? []).map((f) => f.slug));
+
 		// Run beforeSave hooks if data is provided
 		let processedData = bodyWithoutRev.data;
 		if (bodyWithoutRev.data) {
@@ -3073,19 +3082,18 @@ export class EmDashRuntime {
 			}
 
 			// Normalize media fields (fill dimensions, storageKey, etc.)
-			processedData = await this.normalizeMediaFields(collection, processedData!);
+			processedData = await this.normalizeMediaFields(collection, processedData!, collectionInfo);
 
-			// A value the entry ALREADY STORES for a field the collection no longer has is dropped
-			// rather than rejected. Deleting a field leaves its value in the entry's draft
-			// revision, which holds the whole `data`, so a client that reads the entry and writes
-			// it back would be refused for a key it never chose to send, with no body that works:
-			// the key fails validation, and omitting it leaves the merge carrying it. A key the
-			// entry does not already store is still an unknown field, so a typo still fails.
-			processedData = await this.dropUnknownKeysAlreadyStored(
-				collection,
-				processedData,
-				resolvedItem,
-			);
+			// Drop unknown field keys the entry already stores (e.g. a deleted field
+			// stranded in a draft revision) before validation, while still rejecting
+			// unknown keys the entry has never stored.
+			if (collectionInfo?.fields) {
+				processedData = await this.dropUnknownKeysAlreadyStored(
+					processedData,
+					resolvedItem,
+					knownFieldSlugs,
+				);
+			}
 
 			// Validate field-level shape BEFORE the draft-revision write so
 			// invalid updates can't silently land in revision history.
@@ -3107,7 +3115,6 @@ export class EmDashRuntime {
 		let usesDraftRevisions = false;
 		let draftStorageChanged = false;
 		if (processedData) {
-			const collectionInfo = await this.schemaRegistry.getCollectionWithFields(collection);
 			if (collectionInfo?.supports?.includes("revisions")) {
 				usesDraftRevisions = true;
 				const revisionRepo = new RevisionRepository(this.db);
@@ -3125,7 +3132,9 @@ export class EmDashRuntime {
 					// Written without the keys the collection has no field for, so an entry
 					// carrying a deleted field's value sheds it on its next save instead of
 					// carrying it through every revision that follows.
-					const mergedData = keepKnownFields({ ...baseData, ...processedData }, collectionInfo);
+					const mergedData = collectionInfo?.fields
+						? keepKnownFields({ ...baseData, ...processedData }, knownFieldSlugs)
+						: { ...baseData, ...processedData };
 					if (bodyWithoutRev.slug !== undefined) {
 						mergedData._slug = bodyWithoutRev.slug;
 					}
@@ -4168,29 +4177,19 @@ export class EmDashRuntime {
 	}
 
 	/**
-	 * Drop keys the collection has no field for WHEN THE ENTRY ALREADY STORES THEM.
+	 * Drop incoming keys that have no matching collection field when the entry
+	 * already stores them in its live data or current draft revision.
 	 *
-	 * Deleting a field drops its column, but an entry's draft revision holds the whole `data`
-	 * as JSON, so the value stays there and every read hands it back. Without this, a client
-	 * that reads an entry and writes it back is refused for a key it never chose to send, and
-	 * no body works: sending the key fails validation, and omitting it leaves the merge
-	 * carrying it. A key the entry does not already store is left in place, so an unknown
-	 * field is still reported as one.
+	 * Draft revisions keep the full `data` JSON, so deleting a field can strand
+	 * the old value; this lets a read-then-write save succeed without allowing
+	 * genuinely unknown keys.
 	 */
 	private async dropUnknownKeysAlreadyStored(
-		collection: string,
 		data: Record<string, unknown>,
 		existing: { data: Record<string, unknown>; draftRevisionId?: string | null } | null,
+		knownFieldSlugs: ReadonlySet<string>,
 	): Promise<Record<string, unknown>> {
 		if (!existing) return data;
-		const collectionInfo = await this.schemaRegistry
-			.getCollectionWithFields(collection)
-			.catch(() => null);
-		if (!collectionInfo?.fields) return data;
-
-		const known = new Set(collectionInfo.fields.map((f) => f.slug));
-		const unknown = Object.keys(data).filter((key) => !key.startsWith("_") && !known.has(key));
-		if (unknown.length === 0) return data;
 
 		let stored: Record<string, unknown> = existing.data ?? {};
 		if (existing.draftRevisionId) {
@@ -4200,7 +4199,7 @@ export class EmDashRuntime {
 			if (draft?.data) stored = draft.data;
 		}
 
-		const stale = unknown.filter((key) => Object.hasOwn(stored, key));
+		const stale = staleStoredKeys(data, stored, knownFieldSlugs);
 		if (stale.length === 0) return data;
 
 		const result = { ...data };
@@ -4215,12 +4214,15 @@ export class EmDashRuntime {
 	private async normalizeMediaFields(
 		collection: string,
 		data: Record<string, unknown>,
+		preloaded?: CollectionWithFields | null,
 	): Promise<Record<string, unknown>> {
-		let collectionInfo;
-		try {
-			collectionInfo = await this.schemaRegistry.getCollectionWithFields(collection);
-		} catch {
-			return data;
+		let collectionInfo = preloaded;
+		if (collectionInfo === undefined) {
+			try {
+				collectionInfo = await this.schemaRegistry.getCollectionWithFields(collection);
+			} catch {
+				return data;
+			}
 		}
 		if (!collectionInfo?.fields) return data;
 
@@ -4500,25 +4502,6 @@ export class EmDashRuntime {
 		const status = this.pluginStates.get(pluginId);
 		return status === undefined || status === "active";
 	}
-}
-
-/**
- * The entry data without the keys the collection has no field for.
- *
- * Reserved keys (`_slug` and the like) are kept. A collection whose fields could not be read
- * is left alone rather than emptied.
- */
-function keepKnownFields(
-	data: Record<string, unknown>,
-	collectionInfo: { fields?: Array<{ slug: string }> } | null | undefined,
-): Record<string, unknown> {
-	if (!collectionInfo?.fields) return data;
-	const known = new Set(collectionInfo.fields.map((f) => f.slug));
-	const result: Record<string, unknown> = {};
-	for (const [key, value] of Object.entries(data)) {
-		if (key.startsWith("_") || known.has(key)) result[key] = value;
-	}
-	return result;
 }
 
 /**

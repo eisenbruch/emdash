@@ -1,13 +1,13 @@
 /**
- * Deleting a field used to strand every entry that had a pending draft (#3141).
- *
- * The draft revision stores the whole `data`, so the deleted field's value stayed there and
- * every read handed it back. Writing that data back was refused as an unknown field, an explicit
- * null was refused too, and omitting the key was accepted but left the merge carrying it, so no
- * request body got the entry out of the state.
+ * Deleting a field can strand a pending draft: the revision stores the whole `data`,
+ * so the deleted field's value stays there and every read hands it back. Writing that
+ * data back was refused as an unknown field, an explicit null was refused too, and
+ * omitting the key was accepted but left the merge carrying it, so no request body
+ * got the entry out of the state.
  */
-import { afterEach, beforeEach, expect } from "vitest";
+import { afterEach, beforeEach, describe, expect } from "vitest";
 
+import { ContentRepository } from "../../../src/database/repositories/content.js";
 import type { EmDashRuntime } from "../../../src/emdash-runtime.js";
 import { SchemaRegistry } from "../../../src/schema/registry.js";
 import { createTestRuntime } from "../../utils/mcp-runtime.js";
@@ -95,6 +95,32 @@ describeEachDialect(
 			expect(saved.success).toBe(false);
 			if (saved.success) return;
 			expect(saved.error.message).toContain("unknown field on collection");
+		});
+
+		// The plugin context and both sandbox bridges write through the repository rather than
+		// the runtime handler, so the same entry has to be saveable from there too.
+		describe("through ContentRepository.updateDraftAware", () => {
+			it("saves the data it just read, and sheds the deleted field", async () => {
+				const repo = new ContentRepository(ctx.db);
+				const got = await runtime.handleContentGet("posts", id);
+				expect(got.success).toBe(true);
+				if (!got.success) return;
+				const read = got.data.item.data as Record<string, unknown>;
+				expect(read.hits).toBe(43); // the draft still carries it, which is what a caller sends back
+
+				const updated = await repo.updateDraftAware("posts", id, {
+					data: { ...read, title: "edited" },
+				});
+				expect(updated.data).toMatchObject({ title: "edited" });
+				expect(Object.hasOwn(updated.data, "hits")).toBe(false);
+			});
+
+			it("still refuses a key the entry does not already store", async () => {
+				const repo = new ContentRepository(ctx.db);
+				await expect(
+					repo.updateDraftAware("posts", id, { data: { title: "edited", titel: "typo" } }),
+				).rejects.toThrow(/Unknown field/);
+			});
 		});
 	},
 );
