@@ -3075,6 +3075,18 @@ export class EmDashRuntime {
 			// Normalize media fields (fill dimensions, storageKey, etc.)
 			processedData = await this.normalizeMediaFields(collection, processedData!);
 
+			// A value the entry ALREADY STORES for a field the collection no longer has is dropped
+			// rather than rejected. Deleting a field leaves its value in the entry's draft
+			// revision, which holds the whole `data`, so a client that reads the entry and writes
+			// it back would be refused for a key it never chose to send, with no body that works:
+			// the key fails validation, and omitting it leaves the merge carrying it. A key the
+			// entry does not already store is still an unknown field, so a typo still fails.
+			processedData = await this.dropUnknownKeysAlreadyStored(
+				collection,
+				processedData,
+				resolvedItem,
+			);
+
 			// Validate field-level shape BEFORE the draft-revision write so
 			// invalid updates can't silently land in revision history.
 			const { validateContentData } = await import("./api/handlers/validation.js");
@@ -3110,7 +3122,10 @@ export class EmDashRuntime {
 						baseData = existing.data;
 					}
 
-					const mergedData = { ...baseData, ...processedData };
+					// Written without the keys the collection has no field for, so an entry
+					// carrying a deleted field's value sheds it on its next save instead of
+					// carrying it through every revision that follows.
+					const mergedData = keepKnownFields({ ...baseData, ...processedData }, collectionInfo);
 					if (bodyWithoutRev.slug !== undefined) {
 						mergedData._slug = bodyWithoutRev.slug;
 					}
@@ -4153,6 +4168,47 @@ export class EmDashRuntime {
 	}
 
 	/**
+	 * Drop keys the collection has no field for WHEN THE ENTRY ALREADY STORES THEM.
+	 *
+	 * Deleting a field drops its column, but an entry's draft revision holds the whole `data`
+	 * as JSON, so the value stays there and every read hands it back. Without this, a client
+	 * that reads an entry and writes it back is refused for a key it never chose to send, and
+	 * no body works: sending the key fails validation, and omitting it leaves the merge
+	 * carrying it. A key the entry does not already store is left in place, so an unknown
+	 * field is still reported as one.
+	 */
+	private async dropUnknownKeysAlreadyStored(
+		collection: string,
+		data: Record<string, unknown>,
+		existing: { data: Record<string, unknown>; draftRevisionId?: string | null } | null,
+	): Promise<Record<string, unknown>> {
+		if (!existing) return data;
+		const collectionInfo = await this.schemaRegistry
+			.getCollectionWithFields(collection)
+			.catch(() => null);
+		if (!collectionInfo?.fields) return data;
+
+		const known = new Set(collectionInfo.fields.map((f) => f.slug));
+		const unknown = Object.keys(data).filter((key) => !key.startsWith("_") && !known.has(key));
+		if (unknown.length === 0) return data;
+
+		let stored: Record<string, unknown> = existing.data ?? {};
+		if (existing.draftRevisionId) {
+			const draft = await new RevisionRepository(this.db)
+				.findById(existing.draftRevisionId)
+				.catch(() => null);
+			if (draft?.data) stored = draft.data;
+		}
+
+		const stale = unknown.filter((key) => Object.hasOwn(stored, key));
+		if (stale.length === 0) return data;
+
+		const result = { ...data };
+		for (const key of stale) delete result[key];
+		return result;
+	}
+
+	/**
 	 * Normalize image/file fields in content data.
 	 * Fills missing dimensions, storageKey, mimeType, and filename from providers.
 	 */
@@ -4444,6 +4500,25 @@ export class EmDashRuntime {
 		const status = this.pluginStates.get(pluginId);
 		return status === undefined || status === "active";
 	}
+}
+
+/**
+ * The entry data without the keys the collection has no field for.
+ *
+ * Reserved keys (`_slug` and the like) are kept. A collection whose fields could not be read
+ * is left alone rather than emptied.
+ */
+function keepKnownFields(
+	data: Record<string, unknown>,
+	collectionInfo: { fields?: Array<{ slug: string }> } | null | undefined,
+): Record<string, unknown> {
+	if (!collectionInfo?.fields) return data;
+	const known = new Set(collectionInfo.fields.map((f) => f.slug));
+	const result: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(data)) {
+		if (key.startsWith("_") || known.has(key)) result[key] = value;
+	}
+	return result;
 }
 
 /**
