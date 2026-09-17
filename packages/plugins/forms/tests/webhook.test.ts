@@ -2,13 +2,23 @@
  * The webhook is the only step in a submission whose outcome nobody waits for. It has to survive the
  * response being sent, and a response that is not a success has to reach the log: `fetch` resolves on
  * a 4xx, a 5xx, and on the login page an auth wall redirects to, so none of those reject.
+ *
+ * The redirect case is subtle, so these do NOT fake a `Response`. Plugin HTTP access follows redirects itself
+ * with `redirect: "manual"` so it can strip credentials on a cross-origin hop, which means the response it hands
+ * back reports `redirected: false` however many hops it took, and its `url` is the LAST URL fetched. `followsManually`
+ * below is that loop, so the handler sees exactly the response shape production gives it; a fixture that set
+ * `redirected` by hand would pass while production silently failed.
+ *
+ * The real `createHttpAccess` is not used directly because it resolves the hostname over DoH before every request,
+ * which a unit test cannot do offline.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { submitHandler } from "../src/handlers/submit.js";
 import type { FormDefinition } from "../src/types.js";
 
 const WEBHOOK = "https://example.test/hook";
+const LOGIN = "https://example.test/login";
 
 /** The webhook runs after the response, so let its microtasks drain before asserting. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -36,9 +46,32 @@ function form(): FormDefinition {
 	} as unknown as FormDefinition;
 }
 
-function context(fetchImpl: (url: string, init?: RequestInit) => Promise<Response>) {
+/** A response as `globalThis.fetch` returns it: `url` is the URL that was requested. */
+function reply(url: string, status: number, headers: Record<string, string> = {}): Response {
+	const res = new Response(status === 204 || status >= 300 ? null : "ok", { status, headers });
+	Object.defineProperty(res, "url", { value: url });
+	return res;
+}
+
+/** The redirect-following loop from `createHttpAccess`, minus the host checks a unit test cannot run. */
+function followsManually() {
+	return {
+		async fetch(url: string, init?: RequestInit): Promise<Response> {
+			let current = url;
+			for (let i = 0; i <= 5; i++) {
+				const response = await globalThis.fetch(current, { ...init, redirect: "manual" });
+				if (response.status < 300 || response.status >= 400) return response;
+				const location = response.headers.get("Location");
+				if (!location) return response;
+				current = new URL(location, current).href;
+			}
+			throw new Error("too many redirects");
+		},
+	};
+}
+
+function context() {
 	const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-	const stored: Array<Record<string, unknown>> = [];
 	const ctx = {
 		input: { formId: "contact", data: { email: "someone@example.test" } },
 		storage: {
@@ -48,7 +81,7 @@ function context(fetchImpl: (url: string, init?: RequestInit) => Promise<Respons
 				query: async () => ({ items: [{ id: "contact", data: form() }] }),
 			},
 			submissions: {
-				put: async (_id: string, data: Record<string, unknown>) => void stored.push(data),
+				put: async () => {},
 				get: async () => null,
 				count: async () => 1,
 				query: async () => ({ items: [] }),
@@ -56,28 +89,24 @@ function context(fetchImpl: (url: string, init?: RequestInit) => Promise<Respons
 		},
 		kv: { get: async () => null, set: async () => {} },
 		log,
-		http: { fetch: vi.fn(fetchImpl) },
+		http: followsManually(),
 		media: undefined,
 		email: undefined,
 		requestMeta: { ip: "203.0.113.1", userAgent: "test", referer: null, headers: {} },
 	};
-	return { ctx, log, stored };
-}
-
-function response(init: { status?: number; redirected?: boolean; url?: string }): Response {
-	const res = new Response("", { status: init.status ?? 200 });
-	// `redirected` and `url` are read-only on a constructed Response; a real redirected fetch sets both.
-	Object.defineProperty(res, "redirected", { value: init.redirected ?? false });
-	Object.defineProperty(res, "url", { value: init.url ?? WEBHOOK });
-	return res;
+	return { ctx, log };
 }
 
 describe("submission webhook", () => {
+	const realFetch = globalThis.fetch;
 	beforeEach(() => vi.clearAllMocks());
+	afterEach(() => {
+		globalThis.fetch = realFetch;
+	});
 
 	it("logs a 5xx, which fetch resolves rather than rejects", async () => {
-		const { ctx, log } = context(async () => response({ status: 500 }));
-		// eslint-disable-next-line typescript/no-unsafe-argument -- minimal RouteContext for this step
+		globalThis.fetch = vi.fn(async (u: string) => reply(u, 500)) as typeof fetch;
+		const { ctx, log } = context();
 		const result = await submitHandler(ctx as never);
 		await settle();
 
@@ -85,23 +114,39 @@ describe("submission webhook", () => {
 		expect(log.error).toHaveBeenCalledWith("Webhook failed", { url: WEBHOOK, status: 500 });
 	});
 
-	it("logs a redirect to somewhere else, which an auth wall answers with a 200", async () => {
-		const { ctx, log } = context(async () =>
-			response({ status: 200, redirected: true, url: "https://example.test/login" }),
-		);
+	it("logs an auth wall that answers 200 from a different URL", async () => {
+		// What the wrapper actually does: a 302, then it follows to the sign-in page itself.
+		globalThis.fetch = vi.fn(async (u: string) =>
+			u === WEBHOOK ? reply(WEBHOOK, 302, { Location: LOGIN }) : reply(LOGIN, 200),
+		) as typeof fetch;
+		const { ctx, log } = context();
 		await submitHandler(ctx as never);
 		await settle();
 
 		expect(log.warn).toHaveBeenCalledWith("Webhook was redirected", {
 			url: WEBHOOK,
-			finalUrl: "https://example.test/login",
+			finalUrl: LOGIN,
 		});
+		expect(log.error).not.toHaveBeenCalled();
+	});
+
+	it("says nothing about a redirect that lands on the same endpoint", async () => {
+		globalThis.fetch = vi.fn(async (u: string) =>
+			u === WEBHOOK ? reply(WEBHOOK, 301, { Location: `${WEBHOOK}/` }) : reply(`${WEBHOOK}/`, 200),
+		) as typeof fetch;
+		const { ctx, log } = context();
+		await submitHandler(ctx as never);
+		await settle();
+
+		expect(log.warn).not.toHaveBeenCalled();
+		expect(log.error).not.toHaveBeenCalled();
 	});
 
 	it("logs a transport error", async () => {
-		const { ctx, log } = context(async () => {
+		globalThis.fetch = vi.fn(async () => {
 			throw new Error("boom");
-		});
+		}) as typeof fetch;
+		const { ctx, log } = context();
 		await submitHandler(ctx as never);
 		await settle();
 
@@ -112,14 +157,13 @@ describe("submission webhook", () => {
 	});
 
 	it("says nothing when the webhook succeeds, and still calls it", async () => {
-		const { ctx, log } = context(async () => response({ status: 200 }));
+		const spy = vi.fn(async (u: string) => reply(u, 200));
+		globalThis.fetch = spy as typeof fetch;
+		const { ctx, log } = context();
 		await submitHandler(ctx as never);
 		await settle();
 
-		expect(ctx.http.fetch).toHaveBeenCalledWith(
-			WEBHOOK,
-			expect.objectContaining({ method: "POST" }),
-		);
+		expect(spy).toHaveBeenCalledWith(WEBHOOK, expect.objectContaining({ method: "POST" }));
 		expect(log.error).not.toHaveBeenCalled();
 		expect(log.warn).not.toHaveBeenCalled();
 	});
