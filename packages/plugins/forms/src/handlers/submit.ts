@@ -6,7 +6,7 @@
  */
 
 import type { RouteContext, StorageCollection } from "emdash";
-import { PluginRouteError } from "emdash";
+import { after, PluginRouteError } from "emdash";
 import { ulid } from "ulidx";
 
 import { formatSubmissionText, formatWebhookPayload } from "../format.js";
@@ -220,21 +220,36 @@ export async function submitHandler(ctx: RouteContext<SubmitInput>) {
 		}
 	}
 
-	// 9. Webhook (fire and forget)
+	// 9. Webhook, deferred past the response rather than dropped.
+	//
+	// `after()` hands the promise to the host's lifetime extender (`waitUntil` under workerd), so the
+	// call is still guaranteed to run once the visitor has their confirmation. A bare floating promise
+	// is not: the isolate may be torn down as soon as the response is sent.
+	//
+	// The response is inspected too, because `fetch` only rejects on a transport error. A 4xx or 5xx
+	// resolves, and so does the login page a webhook behind an auth wall redirects to, which is why a
+	// misconfigured webhook could fail on every submission and log nothing.
 	if (settings.webhookUrl && ctx.http) {
 		const payload = formatWebhookPayload(form, submissionId, result.data, files);
-		ctx.http
-			.fetch(settings.webhookUrl, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify(payload),
-			})
-			.catch((err: unknown) => {
-				ctx.log.error("Webhook failed", {
-					error: String(err),
-					url: settings.webhookUrl,
+		const { http, log } = ctx;
+		const url = settings.webhookUrl;
+		after(async () => {
+			try {
+				const response = await http.fetch(url, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify(payload),
 				});
-			});
+				if (!response.ok) {
+					log.error("Webhook failed", { url, status: response.status });
+				} else if (response.redirected && response.url !== url) {
+					// A 2xx from somewhere else. Usually an auth wall, and the webhook never ran.
+					log.warn("Webhook was redirected", { url, finalUrl: response.url });
+				}
+			} catch (error: unknown) {
+				log.error("Webhook failed", { url, error: String(error) });
+			}
+		});
 	}
 
 	// 10. Return success
