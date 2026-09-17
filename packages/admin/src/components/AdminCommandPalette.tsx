@@ -252,8 +252,8 @@ export function buildNavItems(
 		if (config.enabled === false) continue;
 		if (config.adminPages && config.adminPages.length > 0) {
 			for (const page of config.adminPages) {
-				// Same treatment as the sidebar: declared labels go through the
-				// shared i18n instance so plugin catalogs can localize them.
+				// Plugin page labels are translated only when the catalog has
+				// an entry for them; otherwise they render as declared.
 				const label = resolvePluginPageLabel(page.label, pluginId, translateLabel);
 
 				items.push({
