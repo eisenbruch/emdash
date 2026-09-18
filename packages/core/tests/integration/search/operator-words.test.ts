@@ -93,7 +93,10 @@ describe("FTS operator words", () => {
 		await createArticle("shoeing", "Shoeing a young horse");
 
 		expect(await search("boarding AND training")).toEqual(["boarding"]);
-		expect(await search("boarding OR shoeing").then((r) => r.sort())).toEqual(["boarding", "shoeing"]);
+		expect(await search("boarding OR shoeing").then((r) => r.sort())).toEqual([
+			"boarding",
+			"shoeing",
+		]);
 		expect(await search("horse NOT young")).toEqual([]);
 	});
 
