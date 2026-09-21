@@ -5799,7 +5799,6 @@ export class EmDashRuntime {
 				if (normalized) {
 					result[field.slug] = normalized;
 				} else if (isBlankString(value)) {
-					// `null` is the canonical "no media"; the field schema rejects `""`.
 					result[field.slug] = null;
 				}
 			} catch {
