@@ -8,13 +8,8 @@ import { FTSManager } from "../../../src/search/fts-manager.js";
 import { searchWithDb } from "../../../src/search/query.js";
 import { setupTestDatabase, teardownTestDatabase } from "../../utils/test-db.js";
 
-/**
- * FTS5's operators are uppercase only, so the lowercase English words "and",
- * "or", "not" and "near" must not send a query down the raw path in
- * escapeQuery, where only double quotes are escaped. When they did, any
- * apostrophe raised `fts5: syntax error near "'"`, which isFts5SyntaxError
- * turns into an empty result: an ordinary search found nothing, with no error.
- */
+// Lowercase operator words must be treated as ordinary search terms, not
+// FTS5 syntax, so they are quoted and prefix-matched like any other word.
 describe("FTS operator words", () => {
 	let db: Kysely<Database>;
 	let repo: ContentRepository;

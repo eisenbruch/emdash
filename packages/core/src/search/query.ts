@@ -63,16 +63,8 @@ function decodeSearchOffset(cursor: string): number {
 
 /** Pattern to split on whitespace for query term extraction */
 const WHITESPACE_SPLIT_PATTERN = /\s+/;
-/**
- * FTS5's operators are UPPERCASE ONLY: `AND` is the operator, `and` is an
- * ordinary bareword. The test is therefore case-SENSITIVE. Matching
- * case-insensitively classified every query containing the English word "and"
- * as a syntax query and sent it down the raw path below, where only double
- * quotes are escaped -- so an apostrophe, and any possessive has one, reached
- * SQLite unescaped and raised `fts5: syntax error near "'"`. That is caught by
- * isFts5SyntaxError and returned as an empty result, so a perfectly ordinary
- * search silently found nothing.
- */
+// FTS5 operators are uppercase-only; a case-insensitive match would treat
+// ordinary words as syntax and skip the safe quoting path below.
 const FTS_OPERATORS_PATTERN = /\b(AND|OR|NOT|NEAR)\b/;
 const DOUBLE_QUOTE_PATTERN = /"/g;
 
