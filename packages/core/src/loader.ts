@@ -1333,6 +1333,28 @@ export function emdashLoader(): LiveLoader<EntryData, EntryFilter, CollectionFil
 						}
 						groupSets.push(groups);
 					}
+					// The pivot query walks the FIRST set through `content_taxonomies` and checks the rest with a
+					// correlated EXISTS per candidate row, so the rows read depend on which set drives. Until now that
+					// was the caller's first `where` key: the same query read 3,131 rows one way round and 539 the
+					// other. Drive from the set with the fewest pivot rows; the counts are an index-only read.
+					if (groupSets.length > 1) {
+						const sizes = await Promise.all(
+							groupSets.map((groups) =>
+								db
+									.selectFrom("content_taxonomies")
+									.select((eb) => eb.fn.countAll<number>().as("n"))
+									.where("collection", "=", type)
+									.where("taxonomy_id", "in", groups)
+									.executeTakeFirst()
+									.then((r) => Number(r?.n ?? 0)),
+							),
+						);
+						const ordered = groupSets
+							.map((groups, i) => ({ groups, n: sizes[i] }))
+							.sort((a, b) => a.n - b.n)
+							.map((x) => x.groups);
+						groupSets.splice(0, groupSets.length, ...ordered);
+					}
 
 					result = await buildTaxonomyPivotQuery({
 						db,
