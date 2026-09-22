@@ -1351,7 +1351,7 @@ export function emdashLoader(): LiveLoader<EntryData, EntryFilter, CollectionFil
 						);
 						const ordered = groupSets
 							.map((groups, i) => ({ groups, n: sizes[i] }))
-							.sort((a, b) => a.n - b.n)
+							.toSorted((a, b) => a.n - b.n)
 							.map((x) => x.groups);
 						groupSets.splice(0, groupSets.length, ...ordered);
 					}
