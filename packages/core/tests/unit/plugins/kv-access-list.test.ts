@@ -9,8 +9,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import { createKVAccess } from "../../../src/plugins/context.js";
 import type { OptionsRepository } from "../../../src/database/repositories/options.js";
+import { createKVAccess } from "../../../src/plugins/context.js";
 
 function fakeOptionsRepo(rows: Record<string, unknown>) {
 	const prefixQueries: string[] = [];
