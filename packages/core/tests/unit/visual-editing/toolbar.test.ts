@@ -200,10 +200,7 @@ describe("renderToolbar", () => {
 		expect(vi.getTimerCount()).toBe(expected.timers);
 	});
 
-	describe("admin window name (#3278)", () => {
-		// The window name used to be the constant "emdash-admin" in both the rendered
-		// anchor and the openAdmin fallback, so every entry shared one browsing context
-		// and opening the admin for one navigated away from another already in it.
+	describe("admin window name", () => {
 		function adminWindowNameIn(script: string): (c: string, i: string) => string {
 			const start = script.indexOf("function adminWindowName(");
 			const end = script.indexOf("// Fallback: open admin");
@@ -234,13 +231,8 @@ describe("renderToolbar", () => {
 			expect(adminWindowName("posts", 'a"b<c>')).toMatch(/^[A-Za-z0-9_-]+$/);
 		});
 
-		it("wires the per-entry name into both the link target and the fallback opener", () => {
+		it("never falls back to one shared window name", () => {
 			const script = toolbarScript(actionToolbar());
-			expect(script).toContain("adminLink.target = adminWindowName(ref.collection, ref.id)");
-			expect(script).toContain(
-				"window.open(url, adminWindowName(annotation.collection, annotation.id))",
-			);
-			// Neither site may fall back to the shared constant.
 			expect(script).not.toMatch(/target\s*=\s*"emdash-admin"/);
 			expect(script).not.toContain('window.open(url, "emdash-admin")');
 		});

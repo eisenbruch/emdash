@@ -949,9 +949,7 @@ export function renderToolbar(config: ToolbarConfig): string {
     }
   }
 
-  // One window name per entry, not per site: a static name makes every entry share a single
-  // browsing context, so opening the admin for one navigates away from another already in it.
-  // A window name may not contain whitespace and ids are not constrained to a safe alphabet.
+  // A window name may not contain whitespace, and ids are not constrained to a safe alphabet.
   function adminWindowName(collection, id) {
     return "emdash-admin-" + (collection + "-" + id).replace(/[^A-Za-z0-9_-]/g, "_");
   }
