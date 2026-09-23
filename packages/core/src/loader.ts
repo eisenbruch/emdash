@@ -1333,24 +1333,22 @@ export function emdashLoader(): LiveLoader<EntryData, EntryFilter, CollectionFil
 						}
 						groupSets.push(groups);
 					}
-					// The pivot query walks the FIRST set through `content_taxonomies` and checks the rest with a
-					// correlated EXISTS per candidate row, so the rows read depend on which set drives. Until now that
-					// was the caller's first `where` key: the same query read 3,131 rows one way round and 539 the
-					// other. Drive from the set with the fewest pivot rows; the counts are an index-only read.
+					// The pivot query walks the first set through `content_taxonomies` and checks the rest with a
+					// correlated EXISTS per candidate row, so the smallest set drives. One grouped count covers every set.
 					if (groupSets.length > 1) {
-						const sizes = await Promise.all(
-							groupSets.map((groups) =>
-								db
-									.selectFrom("content_taxonomies")
-									.select((eb) => eb.fn.countAll<number>().as("n"))
-									.where("collection", "=", type)
-									.where("taxonomy_id", "in", groups)
-									.executeTakeFirst()
-									.then((r) => Number(r?.n ?? 0)),
-							),
-						);
+						const counts = await db
+							.selectFrom("content_taxonomies")
+							.select(["taxonomy_id", (eb) => eb.fn.countAll<number>().as("n")])
+							.where("collection", "=", type)
+							.where("taxonomy_id", "in", groupSets.flat())
+							.groupBy("taxonomy_id")
+							.execute();
+						const perTerm = new Map(counts.map((row) => [row.taxonomy_id, Number(row.n)]));
 						const ordered = groupSets
-							.map((groups, i) => ({ groups, n: sizes[i] }))
+							.map((groups) => ({
+								groups,
+								n: groups.reduce((sum, id) => sum + (perTerm.get(id) ?? 0), 0),
+							}))
 							.toSorted((a, b) => a.n - b.n)
 							.map((x) => x.groups);
 						groupSets.splice(0, groupSets.length, ...ordered);
