@@ -16,6 +16,10 @@ export type TermFilterState = Record<string, string[]>;
 
 export const EMPTY_TERM_FILTER: TermFilterState = {};
 
+export function isTermFilterActive(filter: TermFilterState): boolean {
+	return Object.values(filter).some((slugs) => slugs.length > 0);
+}
+
 /** Depth-first flatten so a hierarchical taxonomy reads as an indented list. */
 function flatten(terms: TaxonomyTerm[], depth = 0): Array<{ term: TaxonomyTerm; depth: number }> {
 	return terms.flatMap((term) => [{ term, depth }, ...flatten(term.children ?? [], depth + 1)]);
@@ -56,25 +60,28 @@ export function TermFilters({
 
 	return (
 		<>
-			{applicable.map((def) => (
-				<TermSelect
-					key={def.name}
-					name={def.name}
-					label={def.label}
-					locale={locale}
-					selected={value[def.name]?.[0] ?? ""}
-					onSelect={(slug) => {
-						const next = { ...value };
-						// Dropping the key rather than storing an empty array keeps
-						// "no selection" distinct from "match nothing".
-						if (slug) next[def.name] = [slug];
-						else delete next[def.name];
-						onChange(next);
-					}}
-					allLabel={t`All ${def.label.toLowerCase()}`}
-					ariaLabel={t`Filter by ${def.label.toLowerCase()}`}
-				/>
-			))}
+			{applicable.map((def) => {
+				const label = def.label;
+				return (
+					<TermSelect
+						key={def.name}
+						name={def.name}
+						label={def.label}
+						locale={locale}
+						selected={value[def.name]?.[0] ?? ""}
+						onSelect={(slug) => {
+							const next = { ...value };
+							// Dropping the key rather than storing an empty array keeps
+							// "no selection" distinct from "match nothing".
+							if (slug) next[def.name] = [slug];
+							else delete next[def.name];
+							onChange(next);
+						}}
+						allLabel={t`All ${label}`}
+						ariaLabel={t`Filter by ${label}`}
+					/>
+				);
+			})}
 		</>
 	);
 }
@@ -120,7 +127,7 @@ function TermSelect({
 			<Select.Option value="">{allLabel}</Select.Option>
 			{options.map(({ term, depth }) => (
 				<Select.Option key={term.id} value={term.slug}>
-					{depth > 0 ? `${"  ".repeat(depth)}${term.label}` : term.label}
+					<span style={{ paddingInlineStart: `${depth}rem` }}>{term.label}</span>
 				</Select.Option>
 			))}
 		</Select>

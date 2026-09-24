@@ -69,7 +69,12 @@ import { ListPaginationFooter, type ListPagination } from "./ListPaginationFoote
 import { LocaleSwitcher } from "./LocaleSwitcher";
 import { RouterLinkButton } from "./RouterLinkButton.js";
 import { TableToolbar, TableToolbarSearch } from "./TableToolbar.js";
-import { TermFilters, type TermFilterState } from "./TermFilters.js";
+import {
+	EMPTY_TERM_FILTER,
+	isTermFilterActive,
+	TermFilters,
+	type TermFilterState,
+} from "./TermFilters.js";
 
 /**
  * Sortable content list columns. The named values map to the server's system
@@ -1051,7 +1056,8 @@ function FilterBar({
 		authorFilter !== "" ||
 		!!dateFilter.from ||
 		!!dateFilter.to ||
-		isBylineFilterActive(bylineFilter);
+		isBylineFilterActive(bylineFilter) ||
+		isTermFilterActive(termFilter ?? EMPTY_TERM_FILTER);
 
 	const handleClear = () => {
 		onStatusFilterChange("all");
@@ -1063,6 +1069,7 @@ function FilterBar({
 			...EMPTY_BYLINE_FILTER,
 			includeInferred: bylineFilter.includeInferred,
 		});
+		onTermFilterChange?.(EMPTY_TERM_FILTER);
 	};
 
 	return (
