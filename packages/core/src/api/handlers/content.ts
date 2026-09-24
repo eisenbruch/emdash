@@ -567,10 +567,7 @@ export async function handleContentList(
 			where.fieldFilters = params.fieldFilters;
 		}
 
-		// A taxonomy that is not attached to this collection can never match,
-		// so it is a caller error rather than an empty result. Failing here is
-		// deliberate: an ignored filter parameter returns a complete, plausible,
-		// unfiltered list with a 200, which is the hardest kind of bug to see.
+		// A taxonomy not attached to this collection can never match: reject it.
 		if (params.termFilters && Object.keys(params.termFilters).length > 0) {
 			const names = Object.keys(params.termFilters);
 			const attached = await db

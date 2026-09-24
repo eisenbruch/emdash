@@ -29,7 +29,6 @@ import * as React from "react";
 
 import { BlockTypeList } from "./components/BlockTypeList.js";
 import { EMPTY_BYLINE_FILTER, type BylineFilterState } from "./components/BylineFilter";
-import { EMPTY_TERM_FILTER, type TermFilterState } from "./components/TermFilters.js";
 import { CommentInbox } from "./components/comments/CommentInbox";
 import { ContentEditor } from "./components/ContentEditor";
 import {
@@ -72,6 +71,7 @@ import { SetupWizard } from "./components/SetupWizard";
 import { Shell } from "./components/Shell";
 import { SignupPage } from "./components/SignupPage";
 import { TaxonomyManager } from "./components/TaxonomyManager";
+import { EMPTY_TERM_FILTER, type TermFilterState } from "./components/TermFilters.js";
 import { Widgets } from "./components/Widgets";
 import { WordPressImport } from "./components/WordPressImport";
 import {
