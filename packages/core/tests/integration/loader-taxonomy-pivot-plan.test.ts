@@ -161,10 +161,8 @@ it("updated_at sort seeks the term via the pivot and does not full-scan the cont
 });
 
 it("keeps the pivot as the outer table for a temp sort, and frees it for an indexed sort", async () => {
-	// The plan itself is not asserted here: which side SQLite drives from with
-	// a plain JOIN depends on planner statistics, and D1 chose the collection
-	// (10,471 rows, 3x the rows read) where local SQLite with the same
-	// `sqlite_stat1` chose the pivot. So this pins the join the builder emits.
+	// `EXPLAIN QUERY PLAN` differs between D1 and local SQLite for the same plain
+	// JOIN, so this test pins the join the builder emits as the stable contract.
 	const pickedJoin = () => {
 		const query = captured.find((q) => q.sql.includes("picked"));
 		expect(query, "expected the loader to emit a pivot-driven query").toBeDefined();

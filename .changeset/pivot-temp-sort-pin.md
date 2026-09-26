@@ -2,4 +2,4 @@
 "emdash": patch
 ---
 
-Fixes taxonomy-filtered listings sorted by `updated_at` or a field reading the whole collection on D1. The plain join from #3300 now applies only to `published_at` and `created_at` sorts, where the query can stop at its limit; other sorts start from the term's assignments again.
+Fixes taxonomy-filtered listings sorted by `updated_at` or a custom field reading the whole collection on D1. `published_at` and `created_at` sorts still use the indexed path that stops at `LIMIT`; `updated_at` and field sorts now seek from the term's assignments again.
