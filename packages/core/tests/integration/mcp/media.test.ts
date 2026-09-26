@@ -762,4 +762,28 @@ describe("media_upload", () => {
 		const stored = await new MediaRepository(db).findById(item.id);
 		expect(stored?.caption).toBe("Photo: Jane Doe, CC BY 2.0");
 	});
+
+	it("keeps caption optional", async () => {
+		harness = await connectMcpHarness({
+			db,
+			userId: ADMIN_ID,
+			userRole: Role.ADMIN,
+			runtimeOptions: { storage },
+		});
+		const result = await harness.client.callTool({
+			name: "media_upload",
+			arguments: {
+				filename: "pixel.png",
+				base64: PNG_BASE64,
+				contentType: "image/png",
+				alt: "A single pixel",
+			},
+		});
+		expect(result.isError, extractText(result)).toBeFalsy();
+		const { item } = extractJson<{ item: { id: string; caption: string | null } }>(result);
+		expect(item.caption).toBeNull();
+
+		const stored = await new MediaRepository(db).findById(item.id);
+		expect(stored?.caption).toBeNull();
+	});
 });
