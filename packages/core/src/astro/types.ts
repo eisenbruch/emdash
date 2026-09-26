@@ -447,9 +447,8 @@ export interface EmDashHandlers {
 
 	handleMediaUpload: (input: {
 		filename: string;
-		base64?: string;
-		url?: string;
-		contentType?: string;
+		base64: string;
+		contentType: string;
 		alt?: string;
 		caption?: string;
 		authorId?: string;
