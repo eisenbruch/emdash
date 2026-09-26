@@ -182,9 +182,6 @@ export function createKVAccess(
 			const includesSettings =
 				"settings:".startsWith(requestedPrefix) || requestedPrefix.startsWith("settings:");
 			const fullPrefix = `${prefix}${requestedPrefix}`;
-			// A `settings:` prefix is served by `settings.list()` below alone. Scanning it here as well
-			// read the same rows twice and discarded the first copy: one extra query on every request
-			// for a plugin that lists its settings in a page hook.
 			const entriesMap = requestedPrefix.startsWith("settings:")
 				? new Map<string, unknown>()
 				: await optionsRepo.getByPrefix(fullPrefix);

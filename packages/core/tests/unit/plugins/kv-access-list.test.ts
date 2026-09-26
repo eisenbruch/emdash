@@ -1,12 +1,3 @@
-/**
- * `ctx.kv.list()` and the options table.
- *
- * `settings:` keys are served by the plugin's SettingsAccess, so a list of that
- * prefix must not also scan the options table through the general path: the
- * rows would be read twice and the first copy thrown away, one extra query on
- * every request for a plugin that lists its settings in a page hook.
- */
-
 import { describe, expect, it } from "vitest";
 
 import type { OptionsRepository } from "../../../src/database/repositories/options.js";
@@ -59,7 +50,7 @@ describe("createKVAccess list", () => {
 	});
 
 	it("still lists every key, settings included, for an empty prefix", async () => {
-		const { repo } = fakeOptionsRepo({
+		const { repo, prefixQueries } = fakeOptionsRepo({
 			"plugin:seo:settings:title": "Site",
 			"plugin:seo:cache:etag": "abc",
 		});
@@ -68,5 +59,6 @@ describe("createKVAccess list", () => {
 		const entries = await kv.list();
 
 		expect(entries.map((entry) => entry.key).toSorted()).toEqual(["cache:etag", "settings:title"]);
+		expect(prefixQueries).toEqual(["plugin:seo:", "plugin:seo:settings:"]);
 	});
 });
