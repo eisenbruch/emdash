@@ -5915,12 +5915,16 @@ export class EmDashRuntime {
 							const nestedValue = normalizedBlock[nestedField.slug];
 							if (nestedValue == null) continue;
 							try {
-								if (nestedField.type === "image") {
-									const normalized = await normalizeImageValue(nestedValue, getProvider);
-									if (normalized) normalizedBlock[nestedField.slug] = normalized;
-								} else if (nestedField.type === "file") {
-									const normalized = await normalizeMediaValue(nestedValue, getProvider);
-									if (normalized) normalizedBlock[nestedField.slug] = normalized;
+								if (nestedField.type === "image" || nestedField.type === "file") {
+									const normalized =
+										nestedField.type === "image"
+											? await normalizeImageValue(nestedValue, getProvider)
+											: await normalizeMediaValue(nestedValue, getProvider);
+									if (normalized) {
+										normalizedBlock[nestedField.slug] = normalized;
+									} else if (isBlankString(nestedValue)) {
+										normalizedBlock[nestedField.slug] = null;
+									}
 								} else if (nestedField.type === "repeater" && Array.isArray(nestedValue)) {
 									const imageSlugs = (nestedField.validation?.subFields ?? [])
 										.filter((subField) => subField.type === "image")
@@ -5935,7 +5939,11 @@ export class EmDashRuntime {
 														normalizedItem[slug],
 														getProvider,
 													);
-													if (normalized) normalizedItem[slug] = normalized;
+													if (normalized) {
+														normalizedItem[slug] = normalized;
+													} else if (isBlankString(normalizedItem[slug])) {
+														normalizedItem[slug] = null;
+													}
 												} catch {
 													continue;
 												}
