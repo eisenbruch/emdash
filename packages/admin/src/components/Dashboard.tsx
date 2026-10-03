@@ -24,7 +24,11 @@ import { getMutationError } from "./DialogError.js";
 import { MarketplaceMigrationBanner } from "./MarketplaceMigrationBanner.js";
 import { RouterLinkButton } from "./RouterLinkButton";
 import { SandboxedPluginWidget } from "./SandboxedPluginWidget";
-import { declaredLabelTranslator, resolvePluginWidgetTitle, visibleCollectionEntries } from "./Sidebar.js";
+import {
+	declaredLabelTranslator,
+	resolvePluginWidgetTitle,
+	visibleCollectionEntries,
+} from "./Sidebar.js";
 
 const DASHBOARD_STATUS_STATES: Record<string, ContentStatusState> = {
 	published: "published",
