@@ -1,9 +1,9 @@
 /**
  * @vitest-environment jsdom
  *
- * Native constraint validation blocks the submit event before the plugin's delegated handler can reach it, so the
- * plugin's own field errors never render. initForms() turns it off per form; these pin that it still does, and
- * that the markup does not do it instead - a reader without JavaScript must keep native validation.
+ * initForms() disables native validation so the plugin can show its own inline errors.
+ * These tests guard that behavior while ensuring the markup itself keeps `novalidate` off
+ * for readers without JavaScript.
  */
 import { beforeEach, describe, expect, test } from "vitest";
 
@@ -37,5 +37,20 @@ describe("initForms", () => {
 		);
 		initForms();
 		expect(forms.map((f) => f.noValidate)).toEqual([true, true]);
+	});
+
+	test("fills the field's error span when an invalid form is submitted", () => {
+		const [form] = embed(
+			`<form class="ec-form" method="POST" action="/submit" data-ec-form data-form-id="newsletter">
+				<fieldset data-page="0">
+					<input type="email" name="email" required />
+					<span data-error-for="email"></span>
+				</fieldset>
+				<button type="submit" class="ec-form-submit">Subscribe</button>
+			</form>`,
+		);
+		initForms();
+		form.requestSubmit();
+		expect(form.querySelector('[data-error-for="email"]')?.textContent).not.toBe("");
 	});
 });
