@@ -1,5 +1,5 @@
 /**
- * Query-plan shape of a listing pinned to an explicit id list (#3186).
+ * Query-plan shape of a listing pinned to an explicit id list.
  *
  * After ANALYZE, `sqlite_stat1` records the average rows per distinct value of
  * an index's leading column. `deleted_at` is NULL for every live row and a
