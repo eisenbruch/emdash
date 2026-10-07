@@ -13,6 +13,7 @@ import consola from "consola";
 import { createDatabase } from "../../database/connection.js";
 import { runMigrations } from "../../database/migrations/runner.js";
 import { applySeed } from "../../seed/apply.js";
+import { claimExplicitSeedOwnership } from "../../seed/ownership.js";
 import type { SeedFile, SeedApplyOptions } from "../../seed/types.js";
 import { validateSeed } from "../../seed/validate.js";
 import { LocalStorage } from "../../storage/local.js";
@@ -106,10 +107,11 @@ export const seedCommand = defineCommand({
 			description: "Validate only, don't apply",
 			default: false,
 		},
-		"no-content": {
+		content: {
 			type: "boolean",
-			description: "Skip sample data (content entries, bylines, taxonomy terms)",
-			default: false,
+			description: "Include sample data (content entries, bylines, taxonomy terms)",
+			negativeDescription: "Skip sample data (content entries, bylines, taxonomy terms)",
+			default: true,
 		},
 		"on-conflict": {
 			type: "string",
@@ -217,7 +219,7 @@ export const seedCommand = defineCommand({
 		}
 
 		const options: SeedApplyOptions = {
-			includeContent: !args["no-content"],
+			includeContent: args.content,
 			onConflict: onConflictRaw,
 			storage,
 		};
@@ -225,6 +227,7 @@ export const seedCommand = defineCommand({
 		// Apply seed
 		consola.start("Applying seed...");
 		try {
+			await claimExplicitSeedOwnership(db, seed);
 			const result = await applySeed(db, seed, options);
 
 			consola.success("Seed applied successfully!");

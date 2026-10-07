@@ -1,11 +1,13 @@
 import { sql, type Kysely } from "kysely";
 
+import { after } from "../after.js";
 import { apiError, apiSuccess, handleError } from "../api/error.js";
-import { checkRateLimit, hashIp } from "../api/handlers/comments.js";
+import { hashIp } from "../api/handlers/comments.js";
 import { isParseError, parseBody } from "../api/parse.js";
 import { createCommentBody } from "../api/schemas/comments.js";
 import { getSiteBaseUrl } from "../api/site-url.js";
 import type { EmDashConfig } from "../astro/integration/runtime.js";
+import { checkRateLimit } from "../auth/rate-limit.js";
 import { resolveSecretsCached } from "../config/secrets.js";
 import { CommentRepository } from "../database/repositories/comment.js";
 import type { Database } from "../database/types.js";
@@ -101,16 +103,6 @@ export async function submitPublicComment(
 		}
 
 		const meta = extractRequestMeta(request, runtime.config);
-		const { ipSalt } = await resolveSecretsCached(runtime.db);
-		const ipHash = meta.ip ? await hashIp(meta.ip, ipSalt) : "unknown";
-		const rateLimited = await checkRateLimit(
-			runtime.db,
-			ipHash,
-			ipHash === "unknown" ? 20 : undefined,
-		);
-		if (rateLimited) {
-			return apiError("RATE_LIMITED", "Too many comments. Please try again later.", 429);
-		}
 
 		const { getTurnstileSecretKey, verifyTurnstileToken } = await import("./turnstile.js");
 		const turnstileSecretKey = getTurnstileSecretKey();
@@ -119,6 +111,23 @@ export async function submitPublicComment(
 			!(await verifyTurnstileToken(body.turnstileToken, turnstileSecretKey, meta.ip))
 		) {
 			return apiError("TURNSTILE_FAILED", "CAPTCHA verification failed", 403);
+		}
+
+		// Counted after the CAPTCHA so unverified requests can't use up the
+		// shared bucket for visitors without a trusted IP.
+		const { ipSalt } = await resolveSecretsCached(runtime.db);
+		const ipHash = meta.ip ? await hashIp(meta.ip, ipSalt) : "unknown";
+		const rateLimit = await checkRateLimit(
+			runtime.db,
+			ipHash,
+			"comments/submit",
+			ipHash === "unknown" ? 20 : 5,
+			600,
+		);
+		if (!rateLimit.allowed) {
+			const response = apiError("RATE_LIMITED", "Too many comments. Please try again later.", 429);
+			response.headers.set("Retry-After", "600");
+			return response;
 		}
 
 		const settings: CollectionCommentSettings = {
@@ -166,17 +175,23 @@ export async function submitPublicComment(
 					: { status: "pending", reason: "Invalid moderation result" };
 			},
 			fireAfterCreate: (event) => {
-				void runtime.hooks
-					.runCommentAfterCreate(event)
-					.catch((error) =>
-						console.error(
-							"[comments] afterCreate error:",
-							error instanceof Error ? error.message : error,
+				// Deferred through after() so the host's waitUntil keeps the hooks
+				// alive: on Workers, work left running after the response is sent
+				// can be cancelled (sandboxed plugins never got past their first
+				// bridge call).
+				after(() =>
+					runtime.hooks
+						.runCommentAfterCreate(event)
+						.catch((error) =>
+							console.error(
+								"[comments] afterCreate error:",
+								error instanceof Error ? error.message : error,
+							),
 						),
-					);
+				);
 			},
 			fireAfterModerate: (event) => {
-				void runtime.hooks
+				return runtime.hooks
 					.runCommentAfterModerate(event)
 					.catch((error) =>
 						console.error(

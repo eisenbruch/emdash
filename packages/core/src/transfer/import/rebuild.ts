@@ -8,12 +8,15 @@
  * - `media_usage`: every imported collection is marked stale so the
  *   media-usage maintenance engine re-indexes it.
  * - `options`: `POST_IMPORT_OPTION_RESETS`.
+ * - `taxonomies`: each taxonomy's structure group, rebuilt from its imported
+ *   definitions; a group whose name no definition has any more is deleted.
  * - `caches`: isolate caches and every object-cache namespace.
  */
 
 import { sql } from "kysely";
 
 import { isSqlite } from "../../database/dialect-helpers.js";
+import { parseTaxonomyCollections } from "../../database/repositories/taxonomy-def.js";
 import { markContentMediaUsageCollectionStale } from "../../media/usage/content-refresh.js";
 import {
 	CacheNamespace,
@@ -26,20 +29,23 @@ import { FTSManager } from "../../search/fts-manager.js";
 import type { SearchTokenizer } from "../../search/types.js";
 import { SEARCH_TOKENIZERS } from "../../search/types.js";
 import { invalidateSiteSettingsCache } from "../../settings/index.js";
+import { isMissingTableError } from "../../utils/db-errors.js";
 import { TransferError } from "../errors.js";
 import { compareIds, type CollectionRecord } from "../format/kinds.js";
 import { POST_IMPORT_OPTION_RESETS } from "../format/settings.js";
 import { applyTransformations } from "../format/transformations.js";
 import { REBUILD_STEPS, type RebuildStep } from "../ops/states.js";
 import type { ImportContext } from "./context.js";
+import { ulidFromHash } from "./ids.js";
 
 const FTS_ROWS_PER_UNIT = 500;
 const FTS_SETUP_STATEMENTS = 20;
 const FTS_POPULATE_STATEMENTS = 4;
 const STALE_STATEMENTS = 4;
 const OPTION_STATEMENTS = 4;
-/** Cache invalidation runs no queries; its checkpoint does. */
-const CACHE_STATEMENTS = 1;
+const TAXONOMY_STATEMENTS = 4;
+/** Unpublishing the redirect generation, plus the checkpoint. */
+const CACHE_STATEMENTS = 2;
 
 export interface RebuildPosition {
 	step: RebuildStep;
@@ -114,6 +120,8 @@ async function runUnit(
 				.execute();
 			return nextStep("options");
 		}
+		case "taxonomies":
+			return taxonomyUnit(context, position.after);
 		case "caches":
 			if (!context.budget.canStart({ queries: CACHE_STATEMENTS })) return "budget";
 			context.budget.start();
@@ -203,7 +211,77 @@ async function searchUnit(
 	return { step: "search", after: slug };
 }
 
+/**
+ * `after`: the last taxonomy name whose group was rebuilt, or null.
+ *
+ * The group becomes hierarchical if any definition is and lists every collection
+ * any definition lists. The definitions keep the package's values, which the
+ * verify stage compares; they differ from the group only where the exporting
+ * site's locales disagreed.
+ */
+async function taxonomyUnit(
+	context: ImportContext,
+	after: string | null,
+): Promise<RebuildPosition | null | "budget"> {
+	if (!context.budget.canStart({ queries: TAXONOMY_STATEMENTS })) return "budget";
+	context.budget.start();
+	const db = context.db;
+	let nextName = db
+		.selectFrom("_emdash_taxonomy_defs")
+		.select((eb) => eb.fn.min("name").as("name"));
+	if (after !== null) nextName = nextName.where("name", ">", after);
+	const defs = await db
+		.selectFrom("_emdash_taxonomy_defs")
+		.select(["id", "name", "hierarchical", "collections", "translation_group"])
+		.where("name", "=", nextName)
+		.orderBy("id")
+		.execute();
+	const name = defs[0]?.name;
+	if (name === undefined) {
+		await db
+			.deleteFrom("_emdash_taxonomy_def_groups")
+			.where((eb) =>
+				eb.not(
+					eb.exists(
+						eb
+							.selectFrom("_emdash_taxonomy_defs")
+							.select(sql`1`.as("one"))
+							.whereRef("_emdash_taxonomy_defs.name", "=", "_emdash_taxonomy_def_groups.name"),
+					),
+				),
+			)
+			.execute();
+		return nextStep("taxonomies");
+	}
+
+	const groupId = defs
+		.map((def) => def.translation_group ?? def.id)
+		.reduce((lowest, candidate) => (candidate < lowest ? candidate : lowest));
+	const collectionSlugs = [
+		...new Set(defs.flatMap((def) => parseTaxonomyCollections(def.collections))),
+	];
+	const hierarchical = defs.some((def) => def.hierarchical === 1) ? 1 : 0;
+	const taken = await db
+		.selectFrom("_emdash_taxonomy_def_groups")
+		.select("id")
+		.where("id", "=", groupId)
+		.where("name", "!=", name)
+		.executeTakeFirst();
+	const id = taken ? await ulidFromHash(context.operationId, "taxonomy_group", name) : groupId;
+	await db
+		.insertInto("_emdash_taxonomy_def_groups")
+		.values({ id, name, hierarchical, collections: JSON.stringify(collectionSlugs) })
+		.onConflict((oc) =>
+			oc
+				.column("name")
+				.doUpdateSet({ id, hierarchical, collections: JSON.stringify(collectionSlugs) }),
+		)
+		.execute();
+	return { step: "taxonomies", after: name };
+}
+
 async function invalidateCaches(context: ImportContext): Promise<void> {
+	await unpublishRedirectArtifacts(context);
 	for (const namespace of Object.values(CacheNamespace)) invalidateObjectCache(namespace);
 	for (const collection of await collections(context)) {
 		invalidateCollectionCache(collection.slug);
@@ -221,4 +299,17 @@ async function invalidateCaches(context: ImportContext): Promise<void> {
 	invalidateBylineCache();
 	invalidateRedirectCache();
 	invalidateUrlPatternCache();
+}
+
+/** Point redirect readers at the imported rules table until a repair republishes. */
+async function unpublishRedirectArtifacts(context: ImportContext): Promise<void> {
+	try {
+		await context.db
+			.updateTable("_emdash_redirect_state")
+			.set({ generation: null, generation_revision: -1 })
+			.where("id", "=", 1)
+			.execute();
+	} catch (error) {
+		if (!isMissingTableError(error)) throw error;
+	}
 }

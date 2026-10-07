@@ -6,11 +6,14 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "@tanstack/react-router";
 import * as React from "react";
 
+import { formatAdminVersion } from "../lib/admin-version.js";
 import { fetchCommentCounts } from "../lib/api/comments";
 import { useCurrentUser } from "../lib/api/current-user";
 import { resolvePluginPagePath, usePluginAdmins } from "../lib/plugin-context";
 import {
 	groupNavItems,
+	joinsContentFolder,
+	normalizeGroup,
 	taxonomyGroup,
 	type GroupableNavItem,
 	type NavEntry,
@@ -36,6 +39,7 @@ export { resolveNavIcon, toPhosphorIconName };
 // Role levels (matching @emdash-cms/auth)
 const ROLE_ADMIN = 50;
 const ROLE_EDITOR = 40;
+const ROLE_CONTRIBUTOR = 20;
 
 /**
  * Static invariants for nav entries that have AC-level visibility
@@ -86,7 +90,7 @@ export function visibleCollectionEntries<T extends { hidden?: boolean }>(
 
 export interface SidebarNavProps {
 	manifest: {
-		collections: Record<string, { label: string; hidden?: boolean; group?: string }>;
+		collections: Record<string, { label: string; hidden?: boolean; icon?: string; group?: string }>;
 		plugins: Record<
 			string,
 			{
@@ -97,6 +101,7 @@ export interface SidebarNavProps {
 					path: string;
 					label?: string;
 					icon?: string;
+					group?: string;
 				}>;
 				dashboardWidgets?: Array<{ id: string; title?: string }>;
 				version?: string;
@@ -120,6 +125,7 @@ export interface SidebarNavProps {
 		admin?: {
 			logo?: string;
 			siteName?: string;
+			footerLabel?: string | false;
 			favicon?: string;
 		};
 	};
@@ -146,8 +152,8 @@ export interface NavItem extends GroupableNavItem {
 	badge?: number;
 }
 
-/** Folder member order: collections, then their taxonomies. */
-const GROUP_RANK = { collection: 0, taxonomy: 1 } as const;
+/** Folder member order: collections, then their taxonomies, then plugin pages. */
+const GROUP_RANK = { collection: 0, taxonomy: 1, pluginPage: 2 } as const;
 
 const FOLDER_STATE_STORAGE_KEY = "emdash-sidebar-folders";
 
@@ -246,7 +252,7 @@ export function NavFolderMenu({
 	onToggle: () => void;
 }) {
 	const { state } = useSidebar();
-	const Icon = ADMIN_NAV_ICONS.folder;
+	const Icon = resolveNavIcon(folder.iconName, ADMIN_NAV_ICONS.folder);
 	const members = folder.items.map((item) => {
 		const path = resolveItemPath(item);
 		return { item, path, active: isItemActive(path, currentPath) };
@@ -342,6 +348,21 @@ export function resolvePluginPageLabel(
 		.join(" ");
 }
 
+/**
+ * Resolve the display title for a plugin dashboard widget. Declared titles
+ * are run through the shared Lingui instance so a plugin-provided catalog
+ * localizes dashboard card headings the same way it localizes sidebar nav
+ * labels. Widgets without a title fall back to the raw widget id.
+ */
+export function resolvePluginWidgetTitle(
+	title: string | undefined,
+	widgetId: string,
+	translate: (id: string) => string,
+): string {
+	if (title) return translate(title);
+	return widgetId;
+}
+
 /** Resolves a nav item's route path by substituting $param placeholders. */
 export function resolveItemPath(item: NavItem): string {
 	let path = item.to;
@@ -397,7 +418,8 @@ export function SidebarNav({ manifest }: SidebarNavProps) {
 		contentItems.push({
 			to: "/content/$collection",
 			label: config.label,
-			icon: getCollectionNavIcon(name),
+			icon: getCollectionNavIcon(name, config.icon),
+			iconName: config.icon,
 			group: config.group,
 			groupRank: GROUP_RANK.collection,
 			params: { collection: name },
@@ -407,6 +429,9 @@ export function SidebarNav({ manifest }: SidebarNavProps) {
 
 	const collectionGroups = new Map(
 		visibleCollectionEntries(manifest.collections).map(([name, config]) => [name, config.group]),
+	);
+	const contentGroups = new Set(
+		Array.from(collectionGroups.values(), normalizeGroup).filter((group) => group !== undefined),
 	);
 
 	const manageItems: NavItem[] = [
@@ -495,11 +520,16 @@ export function SidebarNav({ manifest }: SidebarNavProps) {
 				if (!isBlocksMode && !resolvePluginPagePath(pluginPages, page.path)) continue;
 				if (!isSafePluginPagePath(page.path)) continue;
 				const label = resolvePluginPageLabel(page.label, pluginId, (id) => i18n._(id));
-				pluginItems.push({
+				const group = normalizeGroup(page.group);
+				const item: NavItem = {
 					to: `/plugins/${pluginId}${normalizePluginPagePath(page.path)}`,
 					label,
 					icon: resolveNavIcon(page.icon),
-				});
+					iconName: page.icon,
+					group,
+					groupRank: GROUP_RANK.pluginPage,
+				};
+				(joinsContentFolder(group, contentGroups) ? contentItems : pluginItems).push(item);
 			}
 		}
 	}
@@ -509,7 +539,7 @@ export function SidebarNav({ manifest }: SidebarNavProps) {
 	);
 	const visibleManage = filterNavItemsByRole(manageItems, userRole);
 	const visibleAdmin = filterNavItemsByRole(adminItems, userRole);
-	const visiblePlugins = filterNavItemsByRole(pluginItems, userRole);
+	const visiblePlugins = groupNavItems(filterNavItemsByRole(pluginItems, userRole));
 
 	const folders = useFolderState();
 
@@ -579,6 +609,12 @@ export function SidebarNav({ manifest }: SidebarNavProps) {
 							item={{ to: "/", label: t`Dashboard`, icon: ADMIN_NAV_ICONS.dashboard }}
 							isActive={isItemActive("/", currentPath)}
 						/>
+						{userRole >= ROLE_CONTRIBUTOR && (
+							<NavMenuLink
+								item={{ to: "/calendar", label: t`Calendar`, icon: ADMIN_NAV_ICONS.calendar }}
+								isActive={isItemActive("/calendar", currentPath)}
+							/>
+						)}
 					</KumoSidebar.Menu>
 				</KumoSidebar.Group>
 
@@ -610,7 +646,7 @@ export function SidebarNav({ manifest }: SidebarNavProps) {
 				{visiblePlugins.length > 0 && (
 					<KumoSidebar.Group>
 						<KumoSidebar.GroupLabel>{t`Plugins`}</KumoSidebar.GroupLabel>
-						<KumoSidebar.Menu>{renderNavItems(visiblePlugins)}</KumoSidebar.Menu>
+						<KumoSidebar.Menu>{renderNavEntries(visiblePlugins)}</KumoSidebar.Menu>
 					</KumoSidebar.Group>
 				)}
 			</KumoSidebar.Content>
@@ -622,8 +658,7 @@ export function SidebarNav({ manifest }: SidebarNavProps) {
 						data-testid="admin-version"
 						className="w-40 overflow-hidden truncate ps-2 text-[11px] text-kumo-subtle"
 					>
-						{manifest.admin?.siteName || "EmDash CMS"} v{manifest.version || "0.0.0"}
-						{manifest.commit && ` (${manifest.commit})`}
+						{formatAdminVersion(manifest.version, manifest.commit, manifest.admin?.footerLabel)}
 					</p>
 				</div>
 			</KumoSidebar.Footer>

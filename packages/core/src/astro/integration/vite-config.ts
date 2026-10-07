@@ -7,13 +7,14 @@
 
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, isAbsolute, relative, resolve, win32 } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import type { AstroConfig } from "astro";
 import type { Plugin } from "vite";
 
 import { COMMIT, VERSION } from "../../version.js";
+import { createAdminLocaleResolverPlugin, readAdminLocaleManifest } from "./admin-locales.js";
 import type { EmDashConfig, PluginDescriptor } from "./runtime.js";
 import {
 	VIRTUAL_CONFIG_ID,
@@ -70,16 +71,22 @@ import {
 } from "./virtual-modules.js";
 
 const LOCALE_MESSAGES_RE = /[/\\]([a-z]{2}(?:-[A-Z]{2})?)[/\\]messages\.mjs$/;
+
+export function pathToImportUrl(path: string): string {
+	return pathToFileURL(path, { windows: win32.isAbsolute(path) }).href;
+}
+
 /**
  * Vite plugin that compiles Lingui macros in admin source files.
  * Only active in dev mode when the admin package is aliased to source for HMR.
  * @babel/core is dynamically imported from admin's devDependencies —
  * not declared by core, never ships to end users.
  */
-function linguiMacroPlugin(adminSourcePath: string, adminDistPath: string): Plugin {
-	// Resolve @babel/core from admin's devDependencies, not core's.
+export function linguiMacroPlugin(adminSourcePath: string, adminDistPath: string): Plugin {
 	const adminRequire = createRequire(resolve(adminDistPath, "index.js"));
 	const babelCorePath = adminRequire.resolve("@babel/core");
+	const linguiMacroPluginPath = adminRequire.resolve("@lingui/babel-plugin-lingui-macro");
+	const adminSourceVitePath = adminSourcePath.replaceAll("\\", "/");
 
 	return {
 		name: "emdash-lingui-macro",
@@ -88,18 +95,20 @@ function linguiMacroPlugin(adminSourcePath: string, adminDistPath: string): Plug
 			// Redirect relative locale catalog imports (e.g. ./de/messages.mjs) from
 			// within admin source to the compiled dist/locales/ directory, since
 			// lingui compile only runs during build — not in dev watch mode.
-			if (!importer?.startsWith(adminSourcePath)) return;
+			if (!importer?.startsWith(adminSourceVitePath)) return;
 			const match = id.match(LOCALE_MESSAGES_RE);
 			if (match?.[1]) {
 				return resolve(adminDistPath, "locales", match[1], "messages.mjs");
 			}
 		},
 		async transform(code, id) {
-			if (!id.startsWith(adminSourcePath) || !code.includes("@lingui")) return;
-			const { transformAsync } = (await import(babelCorePath)) as typeof import("@babel/core");
+			if (!id.startsWith(adminSourceVitePath) || !code.includes("@lingui")) return;
+			const { transformAsync } = (await import(
+				pathToImportUrl(babelCorePath)
+			)) as typeof import("@babel/core");
 			const result = await transformAsync(code, {
 				filename: id,
-				plugins: ["@lingui/babel-plugin-lingui-macro"],
+				plugins: [linguiMacroPluginPath],
 				parserOpts: { plugins: ["jsx", "typescript"] },
 			});
 			if (!result?.code) return;
@@ -112,7 +121,7 @@ function linguiMacroPlugin(adminSourcePath: string, adminDistPath: string): Plug
  * Resolve path to the admin package dist directory.
  * Used for Vite alias to ensure the package is found in pnpm's isolated node_modules.
  */
-function resolveAdminDist(): string {
+export function resolveAdminDist(): string {
 	const require = createRequire(import.meta.url);
 	const adminPath = require.resolve("@emdash-cms/admin");
 	// Return the directory containing the built package (dist/)
@@ -417,6 +426,7 @@ export function createViteConfig(
 
 	const adminSourcePath = isDev ? resolveAdminSource(projectRoot) : undefined;
 	const useSource = adminSourcePath !== undefined;
+	const adminLocales = options.resolvedConfig.admin?.locales;
 	const useSyncExternalStoreShimPath = resolveIntegrationShim("use-sync-external-store.js");
 	const useSyncExternalStoreWithSelectorShimPath = resolveIntegrationShim(
 		"use-sync-external-store-with-selector.js",
@@ -437,6 +447,7 @@ export function createViteConfig(
 			__EMDASH_PSEUDO_LOCALE__: JSON.stringify(
 				isDev && process.env["EMDASH_PSEUDO_LOCALE"] === "1",
 			),
+			__EMDASH_ADMIN_LOCALES__: JSON.stringify(adminLocales ?? null),
 		},
 		resolve: {
 			dedupe: ["@emdash-cms/admin", "react", "react-dom"],
@@ -485,6 +496,18 @@ export function createViteConfig(
 		// eslint-disable-next-line typescript/no-unsafe-type-assertion -- Monorepo has both vite 6 (docs) and vite 7 (core). tsgo resolves correctly.
 		plugins: [
 			createVirtualModulesPlugin(options, command),
+			// Must precede the Lingui macro plugin, which redirects source
+			// catalog imports to dist/ in dev.
+			...(adminLocales
+				? [
+						createAdminLocaleResolverPlugin({
+							adminDistPath,
+							adminSourcePath,
+							locales: adminLocales,
+							manifest: readAdminLocaleManifest(adminDistPath),
+						}),
+					]
+				: []),
 			...(cloudflare ? [] : [createWorkersBuiltinsExternalPlugin()]),
 			// In dev mode with source alias, compile Lingui macros on the fly
 			// and redirect locale .mjs imports to dist/.
@@ -631,14 +654,33 @@ export function createViteConfig(
 			// When using dist, pre-bundle to avoid re-optimization on first hydration.
 			// lowlight pulls in a CommonJS highlight.js entry, so the inline Portable
 			// Text editor requires these to be pre-bundled with ESM interop in dev.
+			// Bare ids would not resolve on pnpm sites, which have no top-level copy.
 			include: useSource
-				? ["@astrojs/react/client.js", "lowlight", "highlight.js", "highlight.js/lib/core"]
+				? [
+						"@astrojs/react/client.js",
+						"emdash > lowlight",
+						"emdash > highlight.js",
+						"emdash > highlight.js/lib/core",
+						// The HTML block's code editor loads these lazily. Discovering
+						// them on first use would re-optimize and reload the admin.
+						"emdash > @emdash-cms/admin > @codemirror/autocomplete",
+						"emdash > @emdash-cms/admin > @codemirror/commands",
+						"emdash > @emdash-cms/admin > @codemirror/lang-css",
+						"emdash > @emdash-cms/admin > @codemirror/lang-html",
+						"emdash > @emdash-cms/admin > @codemirror/lang-javascript",
+						"emdash > @emdash-cms/admin > @codemirror/language",
+						"emdash > @emdash-cms/admin > @codemirror/state",
+						"emdash > @emdash-cms/admin > @codemirror/view",
+						"emdash > @emdash-cms/admin > @lezer/highlight",
+						// Each admin language loads its date locale on first use.
+						"emdash > @emdash-cms/admin > react-day-picker/locale/*",
+					]
 				: [
 						"@emdash-cms/admin",
 						"@astrojs/react/client.js",
-						"lowlight",
-						"highlight.js",
-						"highlight.js/lib/core",
+						"emdash > lowlight",
+						"emdash > highlight.js",
+						"emdash > highlight.js/lib/core",
 					],
 			exclude: cloudflare ? ["virtual:emdash"] : [...NODE_NATIVE_EXTERNALS, "virtual:emdash"],
 		},

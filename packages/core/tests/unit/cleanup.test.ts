@@ -1,13 +1,15 @@
 /** Tests for cleanup subsystems and scheduled cleanup orchestration. */
 
-import BetterSqlite3 from "better-sqlite3";
 import { Kysely, SqliteDialect } from "kysely";
 import { ulid } from "ulidx";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
-import { runSystemCleanup } from "../../src/cleanup.js";
+import { NodeSqliteCompatDatabase as BetterSqlite3 } from "#node-sqlite";
+
+import { runSystemCleanup, shouldRunSystemCleanup } from "../../src/cleanup.js";
 import { runMigrations } from "../../src/database/migrations/runner.js";
 import { MediaRepository } from "../../src/database/repositories/media.js";
+import { MAX_404_LOG_ROWS } from "../../src/database/repositories/redirect.js";
 import { RevisionRepository } from "../../src/database/repositories/revision.js";
 import type { Database } from "../../src/database/types.js";
 import { setupTestDatabase, setupTestDatabaseWithCollections } from "../utils/test-db.js";
@@ -126,6 +128,43 @@ describe("Revision Pruning", () => {
 });
 
 describe("Scheduled system cleanup", () => {
+	it("caps the 404 log outside the anonymous request path", async () => {
+		const db = await setupTestDatabase();
+		const rows = Array.from({ length: MAX_404_LOG_ROWS + 2 }, (_, index) => ({
+			id: ulid(),
+			path: `/missing-${index}`,
+			referrer: null,
+			user_agent: null,
+			ip: null,
+			hits: 1,
+			last_seen_at: new Date(index).toISOString(),
+			created_at: new Date(index).toISOString(),
+		}));
+
+		try {
+			for (let offset = 0; offset < rows.length; offset += 250) {
+				await db
+					.insertInto("_emdash_404_log")
+					.values(rows.slice(offset, offset + 250))
+					.execute();
+			}
+			const result = await runSystemCleanup(db);
+			expect(result.notFoundLog).toBe(2);
+			expect(
+				Number(
+					(
+						await db
+							.selectFrom("_emdash_404_log")
+							.select((eb) => eb.fn.countAll<number>().as("c"))
+							.executeTakeFirstOrThrow()
+					).c,
+				),
+			).toBe(MAX_404_LOG_ROWS);
+		} finally {
+			await db.destroy();
+		}
+	});
+
 	it("prunes revision entries queued by revision writes", async () => {
 		const db = await setupTestDatabaseWithCollections();
 		const revisionRepo = new RevisionRepository(db);
@@ -278,6 +317,27 @@ describe("MediaRepository.cleanupPendingUploads", () => {
 		vi.useRealTimers();
 	});
 
+	it("withholds a stale pending key that another media record still references", async () => {
+		vi.useFakeTimers();
+
+		await mediaRepo.createPending({
+			filename: "stale.jpg",
+			mimeType: "image/jpeg",
+			storageKey: "uploads/shared.jpg",
+		});
+		vi.advanceTimersByTime(61 * 60 * 1000);
+		await mediaRepo.create({
+			filename: "keeper.jpg",
+			mimeType: "image/jpeg",
+			storageKey: "uploads/shared.jpg",
+		});
+
+		const deletedKeys = await mediaRepo.cleanupPendingUploads();
+		expect(deletedKeys).toHaveLength(0);
+
+		vi.useRealTimers();
+	});
+
 	it("does not delete recent pending uploads", async () => {
 		// Create pending uploads (current time -- not yet expired)
 		for (let i = 0; i < 5; i++) {
@@ -419,5 +479,26 @@ describe("Expired token cleanup", () => {
 
 		expect(remaining).toHaveLength(5);
 		expect(remaining.every((r) => r.hash.startsWith("valid-"))).toBe(true);
+	});
+});
+
+describe("System cleanup scheduling", () => {
+	it("runs cleanup on the top of the hour", () => {
+		expect(shouldRunSystemCleanup(new Date("2026-10-04T12:00:00.000Z"))).toBe(true);
+	});
+
+	it("skips cleanup during the hour", () => {
+		expect(shouldRunSystemCleanup(new Date("2026-10-04T12:05:00.000Z"))).toBe(false);
+		expect(shouldRunSystemCleanup(new Date("2026-10-04T12:59:00.000Z"))).toBe(false);
+	});
+
+	it("does not run a second cleanup if the previous one was recent", () => {
+		const lastRun = new Date("2026-10-04T12:00:00.000Z");
+		expect(shouldRunSystemCleanup(new Date("2026-10-04T12:00:30.000Z"), lastRun)).toBe(false);
+	});
+
+	it("runs cleanup in the next hour", () => {
+		const lastRun = new Date("2026-10-04T12:00:00.000Z");
+		expect(shouldRunSystemCleanup(new Date("2026-10-04T13:00:00.000Z"), lastRun)).toBe(true);
 	});
 });

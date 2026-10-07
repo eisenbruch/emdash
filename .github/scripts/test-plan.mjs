@@ -3,6 +3,8 @@
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 
+import { isTranslationCatalog } from "./translation-scope.mjs";
+
 export const TEST_LANES = [
 	"unit",
 	"smoke",
@@ -18,11 +20,12 @@ export const TEST_LANES = [
 	"preview",
 ];
 
-const BROWSER_SUITES = ["browser_admin", "browser_release"];
+const BROWSER_SUITES = ["browser_admin", "browser_embeds", "browser_release"];
 const REPOSITORY_METADATA_PATTERN =
 	/^\.github\/(?:dependabot\.yml|bonk-models\.json|codeql-config\.yml|zizmor\.yml)$/;
 const UNIT_PACKAGE_PATH_PATTERN =
 	/^packages\/(?:blocks|gutenberg-to-portable-text|plugin-(?:cli|types)|registry-(?:client|lexicons|moderation|verification))\//;
+
 const TABLE_E2E_PATH_PATTERN = /^e2e\/tests\/.*(?:table|data-grid).*\.(?:spec|test)\.[cm]?[jt]sx?$/;
 const LINE_BREAK_PATTERN = /\r?\n/;
 
@@ -33,6 +36,7 @@ const UNIT_PACKAGE_BY_PATH = new Map([
 	["packages/marketplace/", "@emdash-cms/marketplace"],
 	["packages/plugin-cli/", "@emdash-cms/plugin-cli"],
 	["packages/plugin-types/", "@emdash-cms/plugin-types"],
+	["packages/plugins/embeds/", "@emdash-cms/plugin-embeds"],
 	["packages/plugins/forms/", "@emdash-cms/plugin-forms"],
 	["packages/registry-client/", "@emdash-cms/registry-client"],
 	["packages/registry-lexicons/", "@emdash-cms/registry-lexicons"],
@@ -83,6 +87,16 @@ const RULES = [
 			path.startsWith("skills/") ||
 			path.startsWith(".changeset/") ||
 			path.startsWith(".github/ISSUE_TEMPLATE/"),
+		lanes: [],
+	},
+	{
+		name: "Arabic translation catalog",
+		matches: (path) => path === "packages/admin/src/locales/ar/messages.po",
+		lanes: ["visual"],
+	},
+	{
+		name: "translation catalogs",
+		matches: isTranslationCatalog,
 		lanes: [],
 	},
 	{
@@ -137,6 +151,18 @@ const RULES = [
 		name: "forms plugin",
 		matches: (path) => path.startsWith("packages/plugins/forms/"),
 		lanes: ["unit", "preview"],
+	},
+	{
+		name: "embeds plugin",
+		matches: (path) => path.startsWith("packages/plugins/embeds/"),
+		lanes: ["unit", "integration", "browser", "browser_embeds"],
+		unitMode: "full",
+	},
+	{
+		name: "marketplace image fixture",
+		matches: (path) => path.startsWith("packages/plugins/marketplace-test/"),
+		lanes: ["unit", "integration", "e2e_table"],
+		unitMode: "full",
 	},
 	{
 		name: "plugin fixtures",
@@ -210,7 +236,7 @@ const FULL_PLAN_PATHS = [
 	/^tsconfig(?:\..+)?\.json$/,
 	/^vitest(?:\..+)?\.config\.[cm]?[jt]s$/,
 	/^playwright\.config\.[cm]?[jt]s$/,
-	/^\.github\/scripts\/test-plan(?:\.test)?\.mjs$/,
+	/^\.github\/scripts\/(?:test-plan|translation-scope)(?:\.test)?\.mjs$/,
 	/^\.github\/workflows\//,
 	/^patches\//,
 ];

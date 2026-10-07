@@ -7,6 +7,7 @@ import type {
 } from "@emdash-cms/blocks/server";
 import { createDialect } from "@emdash-cms/cloudflare/db/d1";
 import { CloudflareSandboxRunner } from "@emdash-cms/cloudflare/sandbox";
+import { createStorage } from "@emdash-cms/cloudflare/storage/r2";
 import { pluginManifestSchema, reconcileManifestAccess } from "@emdash-cms/plugin-types";
 import { reset } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -32,7 +33,6 @@ import {
 	type PluginHttpResponseWire,
 	type SandboxOptions,
 	type ScheduledPolicyRejection,
-	type Storage,
 	createContentAccess,
 } from "emdash";
 import { runMigrations } from "emdash/db";
@@ -44,12 +44,13 @@ import {
 	getI18nConfig,
 	handlePluginSettingsUpdate,
 	RedirectRepository,
+	saveTaxonomyStructure,
 	setI18nConfig,
 	TaxonomyRepository,
 	validateEditorDraftPatch,
 	validateEditorDraftRequest,
 	type UserInfo,
-} from "emdash/plugin-test-runtime";
+} from "emdash/internal/plugin-test-runtime";
 import { Kysely } from "kysely";
 
 import type { PluginStorageTestEntry, PluginTestCollection, PluginTestRequest } from "./index.js";
@@ -338,62 +339,6 @@ export interface PluginRuntimeTestHost {
 	dispose(): Promise<void>;
 }
 
-class MemoryStorage implements Storage {
-	private files = new Map<string, { bytes: Uint8Array; contentType: string }>();
-
-	async upload(options: {
-		key: string;
-		body: Buffer | Uint8Array | ReadableStream<Uint8Array>;
-		contentType: string;
-	}) {
-		const bytes =
-			options.body instanceof Uint8Array
-				? new Uint8Array(options.body)
-				: new Uint8Array(await new Response(options.body).arrayBuffer());
-		this.files.set(options.key, { bytes, contentType: options.contentType });
-		return { key: options.key, url: `memory://${options.key}`, size: bytes.byteLength };
-	}
-
-	async download(key: string) {
-		const file = this.files.get(key);
-		if (!file) throw new Error(`Missing test media: ${key}`);
-		return {
-			body: new Blob([file.bytes.slice().buffer]).stream(),
-			contentType: file.contentType,
-			size: file.bytes.byteLength,
-		};
-	}
-
-	async delete(key: string): Promise<void> {
-		this.files.delete(key);
-	}
-
-	async exists(key: string): Promise<boolean> {
-		return this.files.has(key);
-	}
-
-	async list() {
-		return { files: [], cursor: undefined };
-	}
-
-	async getSignedUploadUrl(options: { key: string; contentType: string }) {
-		return {
-			url: `memory://upload/${options.key}`,
-			method: "PUT" as const,
-			headers: { "Content-Type": options.contentType },
-			expiresAt: new Date(Date.now() + 60_000).toISOString(),
-		};
-	}
-
-	getPublicUrl(key: string): string {
-		return `memory://${key}`;
-	}
-
-	clear(): void {
-		this.files.clear();
-	}
-}
-
 function isRuntimeBindings(value: unknown): value is RuntimeBindings {
 	return (
 		typeof value === "object" &&
@@ -477,7 +422,7 @@ export async function createPluginRuntimeTestHost(
 		if (responses?.length === 0) httpResponses.delete(request.url);
 		return pluginHttpResponseFromWire(response);
 	};
-	const storage = new MemoryStorage();
+	const storage = createStorage({ binding: "MEDIA" });
 	const siteInfo = { ...options.site };
 	const previousI18n = getI18nConfig();
 	setI18nConfig(options.i18n ?? null);
@@ -981,11 +926,13 @@ export async function createPluginRuntimeTestHost(
 						conflict.columns(["name", "locale"]).doUpdateSet({
 							label: input.label,
 							label_singular: input.labelSingular ?? null,
-							hierarchical: input.hierarchical ? 1 : 0,
-							collections: JSON.stringify(input.collections),
 						}),
 					)
 					.execute();
+				await saveTaxonomyStructure(runtime.db, input.name, id, {
+					hierarchical: input.hierarchical ?? false,
+					collections: input.collections,
+				});
 				return { id, name: input.name };
 			},
 			async redirect(input) {
@@ -1259,7 +1206,6 @@ export async function createPluginRuntimeTestHost(
 			disposed = true;
 			await runtime.shutdown();
 			await runtime.db.destroy();
-			storage.clear();
 			setI18nConfig(previousI18n);
 			await db.destroy();
 			await reset();

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { SQL_BATCH_SIZE } from "../../utils/chunks.js";
 import { bylineSummarySchema, bylineCreditSchema, contentBylineInputSchema } from "./bylines.js";
 import { cursorPaginationQuery, httpUrl, localeCode } from "./common.js";
+import { referenceChildrenResponseSchema } from "./relations.js";
 
 // ---------------------------------------------------------------------------
 // Content: Input schemas
@@ -147,8 +148,17 @@ const CONTENT_STATUSES = [
 	"future",
 ] as const;
 
+const pageParam = z.coerce
+	.number()
+	.int()
+	.min(1)
+	.max(Number.MAX_SAFE_INTEGER)
+	.optional()
+	.meta({ description: "1-based page number, for numbered pages instead of a cursor" });
+
 export const contentListQuery = cursorPaginationQuery
 	.extend({
+		page: pageParam,
 		/** Filter by status; `all` (like omitting it) lists every status. */
 		status: z
 			.enum([...CONTENT_STATUSES, "all"])
@@ -181,12 +191,32 @@ export const contentListQuery = cursorPaginationQuery
 		/** JSON-encoded indexed custom-field filters, combined with AND semantics. */
 		fieldFilters: contentFieldFiltersQuery.optional(),
 	})
+	.refine(({ cursor, page }) => cursor === undefined || page === undefined, {
+		message: "cursor and page cannot be used together",
+		path: ["page"],
+	})
 	.transform(({ bylines, ...rest }) => ({
 		...rest,
 		bylinesNone: bylines === "none",
 		bylines: bylines === "none" ? undefined : bylines,
 	}))
 	.meta({ id: "ContentListQuery" });
+
+const MAX_CALENDAR_RANGE_MS = 62 * 24 * 60 * 60 * 1000;
+
+/** Canonical UTC form, so bounds compare as text against stored timestamps. */
+const calendarBound = z.iso
+	.datetime({ offset: true, message: "must be an ISO 8601 datetime" })
+	.transform((value) => new Date(value).toISOString());
+
+/** Calendar range: `from` inclusive, `to` exclusive, at most 62 days apart. */
+export const calendarQuery = cursorPaginationQuery
+	.extend({ from: calendarBound, to: calendarBound })
+	.refine((query) => query.from < query.to, { message: "to must be after from", path: ["to"] })
+	.refine((query) => Date.parse(query.to) - Date.parse(query.from) <= MAX_CALENDAR_RANGE_MS, {
+		message: "the range can span at most 62 days",
+		path: ["to"],
+	});
 
 /** ISO 8601 datetime for `publishedAt` / `createdAt`. Routes gate writes behind `content:publish_any`. */
 const contentDateOverride = contentDateTime.nullish();
@@ -208,6 +238,10 @@ export const contentCreateBody = z
 		taxonomies: z.record(z.string(), z.array(z.string())).optional().meta({
 			description:
 				"Taxonomy term assignments as { taxonomyName: [termSlug, ...] }, resolved in the entry's locale.",
+		}),
+		references: z.record(z.string(), z.array(z.string()).max(1000)).optional().meta({
+			description:
+				"Reference selections as { fieldSlug: [entryId, ...] }, in display order. Written as content-reference links in the same transaction as the entry. A field bound to the child end of its relation selects the entries pointing at this one, which carry no order.",
 		}),
 		publishedAt: contentDateOverride,
 		createdAt: contentDateOverride,
@@ -233,6 +267,10 @@ export const contentUpdateBody = z
 		taxonomies: z.record(z.string(), z.array(z.string())).optional().meta({
 			description:
 				"Replace taxonomy assignments as { taxonomyName: [termSlug, ...] }. Only named taxonomies are touched; pass an empty array to clear a taxonomy.",
+		}),
+		references: z.record(z.string(), z.array(z.string()).max(1000)).optional().meta({
+			description:
+				"Reference selections as { fieldSlug: [entryId, ...] }, in display order. Written as content-reference links in the same transaction as the entry. A field bound to the child end of its relation selects the entries pointing at this one, which carry no order.",
 		}),
 		publishedAt: contentDateOverride,
 		migrateBlocks: z.boolean().optional(),
@@ -263,6 +301,10 @@ export const contentRevisionConditionBody = z
 		overrideLock: overrideLockFlag,
 	})
 	.meta({ id: "ContentRevisionConditionBody" });
+
+export const revisionRestoreBody = z.object({
+	overrideLock: overrideLockFlag,
+});
 
 export const contentPublishBody = contentRevisionConditionBody
 	.extend({
@@ -329,9 +371,14 @@ export const contentTermsResponseSchema = z
 
 export const contentTrashQuery = cursorPaginationQuery
 	.extend({
+		page: pageParam,
 		locale: localeCode.optional().meta({
 			description: "Restrict the trash listing to entries in this locale",
 		}),
+	})
+	.refine(({ cursor, page }) => cursor === undefined || page === undefined, {
+		message: "cursor and page cannot be used together",
+		path: ["page"],
 	})
 	.meta({ id: "ContentTrashQuery" });
 
@@ -374,6 +421,10 @@ export const contentItemSchema = z
 		locale: z.string().nullable(),
 		translationGroup: z.string().nullable(),
 		seo: contentSeoSchema.optional(),
+		// First page of each reference field's selection, keyed by field slug. Only
+		// present when the editor GET path opts into hydration
+		// (`referenceOptions`); omitted otherwise, so it's optional here.
+		references: z.record(z.string(), referenceChildrenResponseSchema).optional(),
 	})
 	.meta({ id: "ContentItem" });
 
@@ -446,6 +497,8 @@ export const trashedContentListResponseSchema = z
 	.object({
 		items: z.array(trashedContentItemSchema),
 		nextCursor: z.string().optional(),
+		/** Every trashed entry matching the filters. Returned with numbered pages. */
+		total: z.number().int().nonnegative().optional(),
 	})
 	.meta({ id: "TrashedContentListResponse" });
 
