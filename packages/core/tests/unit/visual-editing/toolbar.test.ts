@@ -256,6 +256,11 @@ describe("renderToolbar", () => {
 			expect(script).not.toMatch(/target\s*=\s*"emdash-admin"/);
 			expect(script).not.toContain('window.open(url, "emdash-admin")');
 		});
+
+		it("renders the admin link without a shared target", () => {
+			const html = renderToolbar({ editMode: true, isPreview: false });
+			expect(html).not.toMatch(/target\s*=\s*"emdash-admin"/);
+		});
 	});
 
 	it("includes save status element", () => {
