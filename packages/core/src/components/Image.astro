@@ -9,7 +9,7 @@ import { Image as AstroImage } from "astro:assets";
 import type { ImageEmbed } from "../media/types.js";
 import { getMediaProvider } from "../media/provider-loader.js";
 import { buildRenderMediaUrl } from "../media/url.js";
-import { toAbsoluteMediaUrl, RESPONSIVE_BREAKPOINTS } from "../media/responsive.js";
+import { toAbsoluteMediaUrl, responsiveWidths } from "../media/responsive.js";
 import { getPublicOrigin } from "../api/public-url.js";
 import { sanitizeHref } from "../utils/url.js";
 import { normalizeImageLink } from "../content/converters/image-link.js";
@@ -30,6 +30,7 @@ export interface Props {
 		};
 		alt?: string;
 		caption?: string;
+		title?: string;
 		/** Original image width */
 		width?: number;
 		/** Original image height */
@@ -62,8 +63,9 @@ function generateSrcset(
 	getSrc: NonNullable<ImageEmbed["getSrc"]>,
 	maxWidth: number,
 	aspectRatio?: number,
+	originalWidth?: number,
 ): string {
-	return RESPONSIVE_BREAKPOINTS.filter((w) => w <= maxWidth * 2)
+	return responsiveWidths(maxWidth, originalWidth)
 		.map((w) => {
 			const h = aspectRatio ? Math.round(w / aspectRatio) : undefined;
 			return `${getSrc({ width: w, height: h })} ${w}w`;
@@ -77,8 +79,14 @@ if (!node?.asset) {
 	return null;
 }
 
-const { caption, displayWidth, displayHeight, alignment, link } = node;
+const { caption, title, displayWidth, displayHeight, alignment, link } = node;
 const { asset, alt = "", width, height } = resolveImageMedia(node);
+const dimension = (value: number | undefined) =>
+	typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+const originalWidth = dimension(width);
+const originalHeight = dimension(height);
+const customWidth = dimension(displayWidth);
+const customHeight = dimension(displayHeight);
 
 const imageLink = normalizeImageLink(link);
 const linkHref = imageLink ? sanitizeHref(imageLink.href) : null;
@@ -90,24 +98,24 @@ const linkTarget = linkBlank ? "_blank" : undefined;
 const linkRel = linkBlank ? "noopener noreferrer" : undefined;
 
 // Calculate aspect ratio from original dimensions
-const aspectRatio = width && height ? width / height : undefined;
+const aspectRatio = originalWidth && originalHeight ? originalWidth / originalHeight : undefined;
 
 // Calculate render dimensions
 let renderWidth: number | undefined;
 let renderHeight: number | undefined;
 
-if (displayWidth && displayHeight) {
-	renderWidth = displayWidth;
-	renderHeight = displayHeight;
-} else if (displayWidth && aspectRatio) {
-	renderWidth = displayWidth;
-	renderHeight = Math.round(displayWidth / aspectRatio);
-} else if (displayHeight && aspectRatio) {
-	renderWidth = Math.round(displayHeight * aspectRatio);
-	renderHeight = displayHeight;
+if (customWidth && customHeight) {
+	renderWidth = customWidth;
+	renderHeight = customHeight;
+} else if (customWidth && aspectRatio) {
+	renderWidth = customWidth;
+	renderHeight = Math.round(customWidth / aspectRatio);
+} else if (customHeight && aspectRatio) {
+	renderWidth = Math.round(customHeight * aspectRatio);
+	renderHeight = customHeight;
 } else {
-	renderWidth = width;
-	renderHeight = height;
+	renderWidth = originalWidth;
+	renderHeight = originalHeight;
 }
 
 // Get the image source URL and srcset
@@ -141,7 +149,7 @@ if (providerId && providerId !== "local") {
 				if (embed.getSrc) {
 					const maxWidth = renderWidth || 1200;
 					const ar = renderWidth && renderHeight ? renderWidth / renderHeight : aspectRatio;
-					srcset = generateSrcset(embed.getSrc, maxWidth, ar);
+					srcset = generateSrcset(embed.getSrc, maxWidth, ar, originalWidth);
 					sizes = renderWidth
 						? `(min-width: ${renderWidth}px) ${renderWidth}px, 100vw`
 						: "100vw";
@@ -192,6 +200,7 @@ if (placeholder && blurhash) {
 					<AstroImage
 						src={astroImageSrc}
 						alt={alt}
+						title={title}
 						width={renderWidth}
 						height={renderHeight}
 						layout="constrained"
@@ -205,6 +214,7 @@ if (placeholder && blurhash) {
 						srcset={srcset}
 						sizes={sizes}
 						alt={alt}
+						title={title}
 						width={renderWidth}
 						height={renderHeight}
 						loading="lazy"
@@ -217,6 +227,7 @@ if (placeholder && blurhash) {
 			<AstroImage
 				src={astroImageSrc}
 				alt={alt}
+				title={title}
 				width={renderWidth}
 				height={renderHeight}
 				layout="constrained"
@@ -230,6 +241,7 @@ if (placeholder && blurhash) {
 				srcset={srcset}
 				sizes={sizes}
 				alt={alt}
+				title={title}
 				width={renderWidth}
 				height={renderHeight}
 				loading="lazy"

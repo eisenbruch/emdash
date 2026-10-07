@@ -5,13 +5,19 @@
  */
 
 import { getI18nConfig, resolveConfiguredLocale } from "../i18n/config.js";
+import { isSiteRelativeDestination } from "../redirects/destination.js";
+import { isPattern, validateDestinationParams, validatePattern } from "../redirects/patterns.js";
 import { validateBlockFields } from "../schema/block-type-contract.js";
 import {
 	FIELD_TYPES,
 	isIndexableFieldType,
 	MAX_COLLECTION_GROUP_LENGTH,
+	MAX_COLLECTION_ICON_LENGTH,
 	MAX_COLLECTION_LIST_COLUMNS,
+	RESERVED_COLLECTION_SLUGS,
+	RESERVED_FIELD_SLUGS,
 } from "../schema/types.js";
+import { compileUrlPattern } from "../schema/url-pattern.js";
 import type { SeedFile, SeedMenuItem, SeedTaxonomy, ValidationResult } from "./types.js";
 
 const COLLECTION_FIELD_SLUG_PATTERN = /^[a-z][a-z0-9_]*$/;
@@ -183,6 +189,11 @@ export function validateSeed(data: unknown): ValidationResult {
 						);
 					}
 
+					// Reserved slugs pass the format check but are rejected by the schema registry on apply
+					if (RESERVED_COLLECTION_SLUGS.includes(collection.slug)) {
+						errors.push(`${prefix}.slug: collection slug "${collection.slug}" is reserved`);
+					}
+
 					// Check for duplicate slugs
 					if (collectionSlugs.has(collection.slug)) {
 						errors.push(`${prefix}.slug: duplicate collection slug "${collection.slug}"`);
@@ -199,6 +210,19 @@ export function validateSeed(data: unknown): ValidationResult {
 				if (collection.routable !== undefined && typeof collection.routable !== "boolean") {
 					errors.push(`${prefix}.routable: must be a boolean`);
 				}
+				if (collection.urlPattern !== undefined) {
+					if (typeof collection.urlPattern !== "string") {
+						errors.push(`${prefix}.urlPattern: must be a string`);
+					} else if (collection.urlPattern) {
+						try {
+							compileUrlPattern(collection.urlPattern);
+						} catch (error) {
+							errors.push(
+								`${prefix}.urlPattern: ${error instanceof Error ? error.message : "invalid URL pattern"}`,
+							);
+						}
+					}
+				}
 				if (collection.group !== undefined) {
 					if (typeof collection.group !== "string") {
 						errors.push(`${prefix}.group: must be a string`);
@@ -206,6 +230,13 @@ export function validateSeed(data: unknown): ValidationResult {
 						errors.push(
 							`${prefix}.group: must be at most ${MAX_COLLECTION_GROUP_LENGTH} characters`,
 						);
+					}
+				}
+				if (collection.icon !== undefined) {
+					if (typeof collection.icon !== "string") {
+						errors.push(`${prefix}.icon: must be a string`);
+					} else if (collection.icon.trim().length > MAX_COLLECTION_ICON_LENGTH) {
+						errors.push(`${prefix}.icon: must be at most ${MAX_COLLECTION_ICON_LENGTH} characters`);
 					}
 				}
 
@@ -241,6 +272,13 @@ export function validateSeed(data: unknown): ValidationResult {
 							}
 						}
 					}
+					if (
+						isRecord(collection.admin) &&
+						collection.admin.quickCreate !== undefined &&
+						typeof collection.admin.quickCreate !== "boolean"
+					) {
+						errors.push(`${prefix}.admin.quickCreate: must be a boolean`);
+					}
 				}
 
 				// Validate fields
@@ -261,6 +299,11 @@ export function validateSeed(data: unknown): ValidationResult {
 								errors.push(
 									`${fieldPrefix}.slug: must start with a letter and contain only lowercase letters, numbers, and underscores`,
 								);
+							}
+
+							// Reserved slugs pass the format check but are rejected by the schema registry on apply
+							if (RESERVED_FIELD_SLUGS.includes(field.slug)) {
+								errors.push(`${fieldPrefix}.slug: field slug "${field.slug}" is reserved`);
 							}
 
 							// Check for duplicate field slugs
@@ -301,6 +344,19 @@ export function validateSeed(data: unknown): ValidationResult {
 							errors.push(
 								`${fieldPrefix}.indexed: a reference field with a targetCollection stores no column to index`,
 							);
+						}
+
+						if (field.type === "repeater") {
+							const subFields = field.validation?.subFields;
+							if ("fields" in field) {
+								warnings.push(
+									`${fieldPrefix}.fields: repeater sub-fields must be defined in validation.subFields; these fields are ignored`,
+								);
+							} else if (!Array.isArray(subFields) || subFields.length === 0) {
+								warnings.push(
+									`${fieldPrefix}.validation.subFields: repeater needs a non-empty array of sub-fields, so its rows have nothing to edit`,
+								);
+							}
 						}
 					}
 				}
@@ -600,10 +656,22 @@ export function validateSeed(data: unknown): ValidationResult {
 
 				if (!destination) {
 					errors.push(`${prefix}: destination is required`);
-				} else if (!isValidRedirectPath(destination)) {
+				} else if (!isValidRedirectPath(destination) || !isSiteRelativeDestination(destination)) {
 					errors.push(
-						`${prefix}.destination: must be a path starting with / (no protocol-relative URLs, path traversal, or newlines)`,
+						`${prefix}.destination: must be a path starting with / (no protocol-relative URLs, backslash prefixes, path traversal, or control characters)`,
 					);
+				}
+
+				if (source && isPattern(source)) {
+					const patternError = validatePattern(source);
+					if (patternError) {
+						errors.push(`${prefix}.source: invalid pattern: ${patternError}`);
+					} else if (destination) {
+						const destinationError = validateDestinationParams(source, destination);
+						if (destinationError) {
+							errors.push(`${prefix}.destination: ${destinationError}`);
+						}
+					}
 				}
 
 				if (redirect.type !== undefined) {
@@ -672,6 +740,12 @@ export function validateSeed(data: unknown): ValidationResult {
 
 						if (widget.type === "component" && !widget.componentId) {
 							errors.push(`${widgetPrefix}: componentId is required for component widgets`);
+						}
+
+						if ("settings" in widget) {
+							warnings.push(
+								`${widgetPrefix}.settings: not applied; widget options belong in "props"`,
+							);
 						}
 					}
 				}

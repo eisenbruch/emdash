@@ -39,6 +39,9 @@ export {
 	type RecentItem,
 } from "./dashboard.js";
 
+// Core update check
+export { handleCoreUpdateStatus, type CoreUpdateStatus } from "./update-check.js";
+
 // Manifest generation
 export { generateManifest } from "./manifest.js";
 
@@ -144,9 +147,11 @@ export {
 // SEO handlers
 export {
 	handleSitemapData,
+	handleSitemapIndexData,
 	type SitemapCollectionData,
 	type SitemapContentEntry,
 	type SitemapDataResponse,
+	type SitemapIndexEntry,
 } from "./seo.js";
 
 // Plugin handlers

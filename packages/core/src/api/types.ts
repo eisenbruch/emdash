@@ -57,8 +57,12 @@ export interface ManifestCollectionDescriptor {
 	titleField?: string;
 	dateField?: string;
 	hidden?: boolean;
+	/** Phosphor icon name for the admin sidebar entry */
+	icon?: string;
 	/** Admin sidebar folder shared with other collections of the same group */
 	group?: string;
+	/** `false` omits the dashboard's "new entry" quick action */
+	quickCreate?: boolean;
 	listColumns?: string[];
 	fields: Record<string, ManifestFieldDescriptor>;
 }
@@ -70,6 +74,8 @@ export interface ManifestFieldDescriptor extends FieldDescriptor {
 	unsupportedType?: { type: string; path: string };
 	blockTypes?: BlockType[];
 	blockTypeFingerprint?: string;
+	/** Value a new entry starts with in the admin editor. */
+	defaultValue?: unknown;
 }
 
 export interface FieldDescriptor {

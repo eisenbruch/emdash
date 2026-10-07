@@ -151,8 +151,12 @@ export interface AdminManifest {
 			titleField?: string;
 			dateField?: string;
 			hidden?: boolean;
+			/** Phosphor icon name for the sidebar entry */
+			icon?: string;
 			/** Sidebar folder shared with other collections of the same group */
 			group?: string;
+			/** `false` omits the dashboard's "new entry" quick action */
+			quickCreate?: boolean;
 			listColumns?: string[];
 			fields: Record<
 				string,
@@ -173,6 +177,8 @@ export interface AdminManifest {
 					unsupportedType?: { type: string; path: string };
 					blockTypes?: import("./schema.js").BlockType[];
 					blockTypeFingerprint?: string;
+					/** Value a new entry starts with. */
+					defaultValue?: unknown;
 				}
 			>;
 		}
@@ -197,6 +203,7 @@ export interface AdminManifest {
 				path: string;
 				label?: string;
 				icon?: string;
+				group?: string;
 			}>;
 			dashboardWidgets?: Array<{
 				id: string;
@@ -246,6 +253,11 @@ export interface AdminManifest {
 	 * authentication is handled externally.
 	 */
 	authMode: string;
+	/**
+	 * Whether the external auth provider replaces user names on every
+	 * authenticated request, so names cannot be edited in the admin.
+	 */
+	providerManagedName?: boolean;
 	/**
 	 * Whether self-signup is enabled (at least one allowed domain is active).
 	 * Used by the login page to conditionally show the "Sign up" link.
@@ -308,10 +320,7 @@ export interface AdminManifest {
 		field:
 			| "registry.aggregatorUrl"
 			| "registry.policy.minimumReleaseAge"
-			| "registry.policy.minimumReleaseAgeExclude"
-			| "experimental.registry.aggregatorUrl"
-			| "experimental.registry.policy.minimumReleaseAge"
-			| "experimental.registry.policy.minimumReleaseAgeExclude";
+			| "registry.policy.minimumReleaseAgeExclude";
 	};
 	/**
 	 * Admin branding overrides for white-labeling.
@@ -320,6 +329,7 @@ export interface AdminManifest {
 	admin?: {
 		logo?: string;
 		siteName?: string;
+		footerLabel?: string | false;
 		favicon?: string;
 	};
 }

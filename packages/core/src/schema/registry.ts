@@ -22,6 +22,7 @@ import type { CollectionTable, Database, FieldTable } from "../database/types.js
 import { validateIdentifier } from "../database/validate.js";
 import {
 	canResumeMediaUsageCollectionCapture,
+	findResumableMediaUsageCollectionCaptureId,
 	finalizeMediaUsageCollectionCapture,
 	installPreparedMediaUsageCollectionCapture,
 	markMediaUsageCollectionCaptureReady,
@@ -36,6 +37,7 @@ import {
 	invalidateContentMediaUsageSchemaChange,
 	markContentMediaUsageCollectionStaleSafely,
 } from "../media/usage/content-refresh.js";
+import { finishMediaUsageCollectionDeletion } from "../media/usage/maintenance-engine.js";
 import { FTSManager } from "../search/fts-manager.js";
 import { getPortableTableSpec } from "../transfer/format/columns.js";
 import { canonicalDigest } from "../transfer/format/digest.js";
@@ -48,6 +50,7 @@ import type {
 } from "../transfer/schema-importer.js";
 import { chunks, SQL_BATCH_SIZE } from "../utils/chunks.js";
 import { resetRegisteredCollectionsCache } from "./collection-slugs-cache.js";
+import { MAX_SCHEMA_SLUG_LENGTH, SCHEMA_SLUG_PATTERN } from "./slug.js";
 import {
 	type Collection,
 	type CollectionAdminConfig,
@@ -71,9 +74,9 @@ import {
 	RESERVED_COLLECTION_SLUGS,
 	MAX_BLOCKS_ITEMS,
 } from "./types.js";
+import { compileUrlPattern } from "./url-pattern.js";
 
 // Regex patterns for schema registry
-const SLUG_VALIDATION_PATTERN = /^[a-z][a-z0-9_]*$/;
 const EC_PREFIX_PATTERN = /^ec_/;
 const SINGLE_QUOTE_PATTERN = /'/g;
 const UNDERSCORE_PATTERN = /_/g;
@@ -212,6 +215,7 @@ function parseCollectionAdmin(raw: string | null | undefined): CollectionAdminCo
 		listColumns: Array.isArray(listColumns)
 			? listColumns.filter((value): value is string => typeof value === "string")
 			: undefined,
+		quickCreate: typeof parsed.quickCreate === "boolean" ? parsed.quickCreate : undefined,
 	};
 }
 
@@ -316,6 +320,13 @@ export class SchemaError extends Error {
 	}
 }
 
+function collectionBeingDeletedError(slug: string): SchemaError {
+	return new SchemaError(
+		`Collection "${slug}" is being deleted. Try again shortly.`,
+		"COLLECTION_EXISTS",
+	);
+}
+
 /**
  * Schema Registry
  *
@@ -329,7 +340,20 @@ export class SchemaRegistry {
 	 * Notify the dev typegen hook that the schema has changed.
 	 */
 	private notifyTypegen(): void {
-		refreshDevTypes(this.db);
+		refreshDevTypes();
+	}
+
+	/** A deleted collection's slug stays taken until its media usage cleanup finalizes. */
+	private async finishPendingDeletion(slug: string): Promise<void> {
+		const deletion = await finishMediaUsageCollectionDeletion(this.db, slug);
+		if (deletion.state === "failed") {
+			throw new SchemaError(
+				`Deleting the previous collection "${slug}" failed. Retry it by sending {"collectionId":"${deletion.collectionId}"} to POST /_emdash/api/admin/media-usage/collection-deletions/retry, then create the collection again.`,
+				"COLLECTION_EXISTS",
+				{ deletedCollectionId: deletion.collectionId },
+			);
+		}
+		if (deletion.state === "pending") throw collectionBeingDeletedError(slug);
 	}
 
 	// ============================================
@@ -492,17 +516,16 @@ export class SchemaRegistry {
 	async createCollection(input: CreateCollectionInput): Promise<Collection> {
 		// Validate slug
 		this.validateSlug(input.slug, "collection");
+		this.validateUrlPattern(input.urlPattern);
 		if (RESERVED_COLLECTION_SLUGS.includes(input.slug)) {
 			throw new SchemaError(`Collection slug "${input.slug}" is reserved`, "RESERVED_SLUG");
 		}
-		if (await isMediaUsageCollectionSlugDeleting(this.db, input.slug)) {
-			throw new SchemaError(`Collection "${input.slug}" already exists`, "COLLECTION_EXISTS");
-		}
+		await this.finishPendingDeletion(input.slug);
 
 		// Check if collection already exists
 		const existing = await this.getCollection(input.slug);
 		if (await isMediaUsageCollectionSlugDeleting(this.db, input.slug)) {
-			throw new SchemaError(`Collection "${input.slug}" already exists`, "COLLECTION_EXISTS");
+			throw collectionBeingDeletedError(input.slug);
 		}
 		if (
 			existing &&
@@ -515,6 +538,19 @@ export class SchemaRegistry {
 		}
 
 		const proposedId = existing?.id ?? ulid();
+		const tableName = this.getTableName(input.slug);
+		if (
+			!existing &&
+			(await tableExists(this.db, tableName)) &&
+			!(await findResumableMediaUsageCollectionCaptureId(this.db, {
+				collectionSlug: input.slug,
+			}))
+		) {
+			throw new SchemaError(
+				`Collection table "${tableName}" exists but is not registered`,
+				"COLLECTION_TABLE_ORPHANED",
+			);
+		}
 
 		// Default `supports` to drafts + revisions when the caller didn't
 		// specify it. Explicit empty array (`[]`) is preserved as an opt-out
@@ -606,11 +642,9 @@ export class SchemaRegistry {
 		fields: readonly CreateFieldInput[],
 	): Promise<void> {
 		this.validateSlug(input.slug, "collection");
+		this.validateUrlPattern(input.urlPattern);
 		if (RESERVED_COLLECTION_SLUGS.includes(input.slug)) {
 			throw new SchemaError(`Collection slug "${input.slug}" is reserved`, "RESERVED_SLUG");
-		}
-		if (await isMediaUsageCollectionSlugDeleting(this.db, input.slug)) {
-			throw new SchemaError(`Collection "${input.slug}" already exists`, "COLLECTION_EXISTS");
 		}
 
 		const fieldSlugs = new Set<string>();
@@ -651,9 +685,10 @@ export class SchemaRegistry {
 			input,
 			normalizedFields,
 		);
+		await this.finishPendingDeletion(input.slug);
 		const existing = await this.getCollection(input.slug);
 		if (await isMediaUsageCollectionSlugDeleting(this.db, input.slug)) {
-			throw new SchemaError(`Collection "${input.slug}" already exists`, "COLLECTION_EXISTS");
+			throw collectionBeingDeletedError(input.slug);
 		}
 		if (
 			existing &&
@@ -1049,6 +1084,7 @@ export class SchemaRegistry {
 			if (!existingRow) {
 				throw new SchemaError(`Collection "${slug}" not found`, "COLLECTION_NOT_FOUND");
 			}
+			if (input.urlPattern !== existingRow.url_pattern) this.validateUrlPattern(input.urlPattern);
 			const existing = this.mapCollectionRow(existingRow);
 			await this.validateTitleDateFields(
 				existing.id,
@@ -1064,7 +1100,7 @@ export class SchemaRegistry {
 			if (input.label !== undefined) updates.label = input.label;
 			if (input.labelSingular !== undefined) updates.label_singular = input.labelSingular;
 			if (input.description !== undefined) updates.description = input.description;
-			if (input.icon !== undefined) updates.icon = input.icon;
+			if (input.icon !== undefined) updates.icon = input.icon || null;
 			if (input.admin !== undefined) updates.admin_config = JSON.stringify(input.admin);
 			if (input.supports !== undefined) updates.supports = JSON.stringify(input.supports);
 			if (input.urlPattern !== undefined) updates.url_pattern = input.urlPattern;
@@ -2295,15 +2331,30 @@ export class SchemaRegistry {
 			throw new SchemaError(`${type} slug is required`, "INVALID_SLUG");
 		}
 
-		if (!SLUG_VALIDATION_PATTERN.test(slug)) {
+		if (!SCHEMA_SLUG_PATTERN.test(slug)) {
 			throw new SchemaError(
 				`${type} slug must start with a letter and contain only lowercase letters, numbers, and underscores`,
 				"INVALID_SLUG",
 			);
 		}
 
-		if (slug.length > 63) {
-			throw new SchemaError(`${type} slug must be 63 characters or less`, "INVALID_SLUG");
+		if (slug.length > MAX_SCHEMA_SLUG_LENGTH) {
+			throw new SchemaError(
+				`${type} slug must be ${MAX_SCHEMA_SLUG_LENGTH} characters or less`,
+				"INVALID_SLUG",
+			);
+		}
+	}
+
+	private validateUrlPattern(urlPattern: string | null | undefined): void {
+		if (!urlPattern) return;
+		try {
+			compileUrlPattern(urlPattern);
+		} catch (error) {
+			throw new SchemaError(
+				error instanceof Error ? error.message : "Invalid URL pattern",
+				"INVALID_URL_PATTERN",
+			);
 		}
 	}
 

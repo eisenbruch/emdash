@@ -37,9 +37,10 @@ import type {
 	RelationDef,
 	UpdateRelationInput,
 } from "../lib/api/relations.js";
-import { cn } from "../lib/utils";
+import { cn, slugifyIdentifier } from "../lib/utils";
 import { ArrowPrev } from "./ArrowIcons.js";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { getMutationError } from "./DialogError";
 import { EditorHeader } from "./EditorHeader";
 import { FieldEditor } from "./FieldEditor";
 import { RelationImpact } from "./RelationImpact.js";
@@ -47,17 +48,17 @@ import { RelationsPanel } from "./RelationsPanel.js";
 import { RouterLinkButton } from "./RouterLinkButton.js";
 import { SaveButton } from "./SaveButton";
 
-// Regex patterns for slug generation
-const SLUG_INVALID_CHARS_PATTERN = /[^a-z0-9]+/g;
-const SLUG_LEADING_TRAILING_PATTERN = /^_|_$/g;
+const MULTIPLE_PLACEHOLDERS_IN_SEGMENT = /\{\w+\}[^/]*\{\w+\}/;
 
 export interface ContentTypeEditorProps {
 	collection?: SchemaCollectionWithFields;
 	isNew?: boolean;
 	isSaving?: boolean;
 	onSave: (input: CreateCollectionInput | UpdateCollectionInput) => void;
-	onAddField?: (input: CreateFieldInput) => void;
-	onUpdateField?: (fieldSlug: string, input: CreateFieldInput) => void;
+	/** Resolves once the field is saved; rejects with the server's message. */
+	onAddField?: (input: CreateFieldInput) => Promise<unknown>;
+	/** Resolves once the field is saved; rejects with the server's message. */
+	onUpdateField?: (fieldSlug: string, input: CreateFieldInput) => Promise<unknown>;
 	/** `deleteRelation` also removes the relationship a reference field views,
 	 * its links, and the field on the other end. */
 	onDeleteField?: (fieldSlug: string, options?: { deleteRelation?: boolean }) => void;
@@ -186,7 +187,10 @@ export function ContentTypeEditor({
 	const [urlPattern, setUrlPattern] = React.useState(collection?.urlPattern ?? "");
 	const [routable, setRoutable] = React.useState(collection?.routable ?? true);
 	const [editLocking, setEditLocking] = React.useState(collection?.editLocking ?? true);
+	const [icon, setIcon] = React.useState(collection?.icon ?? "");
 	const [group, setGroup] = React.useState(collection?.group ?? "");
+	const [hidden, setHidden] = React.useState(collection?.hidden ?? false);
+	const [quickCreate, setQuickCreate] = React.useState(collection?.admin?.quickCreate ?? true);
 	// SEO is managed via the separate `hasSeo` field; strip any legacy "seo" entry
 	// so it isn't sent back on save (the API enum rejects it).
 	const [supports, setSupports] = React.useState<string[]>(
@@ -214,12 +218,22 @@ export function ContentTypeEditor({
 	const [fieldEditorOpen, setFieldEditorOpen] = React.useState(false);
 	const [editingField, setEditingField] = React.useState<SchemaField | undefined>();
 	const [fieldSaving, setFieldSaving] = React.useState(false);
+	const [fieldSaveError, setFieldSaveError] = React.useState<string | null>(null);
 	const [deleteFieldTarget, setDeleteFieldTarget] = React.useState<SchemaField | null>(null);
 	// Checked by default: deleting a reference field almost always means the
 	// relationship it views is finished too.
 	const [deleteFieldRelation, setDeleteFieldRelation] = React.useState(true);
 
-	const urlPatternValid = !urlPattern || urlPattern.includes("{slug}");
+	const urlPatternChanged = urlPattern !== (collection?.urlPattern ?? "");
+	const urlPatternSharesSegment =
+		urlPatternChanged && MULTIPLE_PLACEHOLDERS_IN_SEGMENT.test(urlPattern);
+	const urlPatternValid =
+		!urlPattern || (urlPattern.includes("{slug}") && !urlPatternSharesSegment);
+
+	const slugError =
+		isNew && !slug && label.trim().length > 0
+			? t`A slug cannot be generated from this label. Type one manually using lowercase letters, numbers, and underscores.`
+			: undefined;
 
 	// Track whether form has unsaved changes
 	const hasChanges = React.useMemo(() => {
@@ -232,7 +246,10 @@ export function ContentTypeEditor({
 			urlPattern !== (collection.urlPattern ?? "") ||
 			routable !== (collection.routable ?? true) ||
 			editLocking !== (collection.editLocking ?? true) ||
+			icon !== (collection.icon ?? "") ||
 			group !== (collection.group ?? "") ||
+			hidden !== (collection.hidden ?? false) ||
+			quickCreate !== (collection.admin?.quickCreate ?? true) ||
 			JSON.stringify([...supports].toSorted()) !==
 				JSON.stringify(collection.supports.filter((s) => s !== "seo").toSorted()) ||
 			hasSeo !== collection.hasSeo ||
@@ -251,7 +268,10 @@ export function ContentTypeEditor({
 		urlPattern,
 		routable,
 		editLocking,
+		icon,
 		group,
+		hidden,
+		quickCreate,
 		supports,
 		hasSeo,
 		commentsEnabled,
@@ -264,12 +284,7 @@ export function ContentTypeEditor({
 	const handleLabelChange = (value: string) => {
 		setLabel(value);
 		if (isNew) {
-			setSlug(
-				value
-					.toLowerCase()
-					.replace(SLUG_INVALID_CHARS_PATTERN, "_")
-					.replace(SLUG_LEADING_TRAILING_PATTERN, ""),
-			);
+			setSlug(slugifyIdentifier(value));
 		}
 	};
 
@@ -299,7 +314,10 @@ export function ContentTypeEditor({
 				urlPattern: urlPattern || undefined,
 				routable,
 				editLocking,
+				icon: icon.trim() || undefined,
 				group: group.trim() || undefined,
+				hidden,
+				admin: quickCreate ? undefined : { quickCreate: false },
 				supports,
 				hasSeo,
 			});
@@ -311,7 +329,13 @@ export function ContentTypeEditor({
 				urlPattern: urlPattern || undefined,
 				routable,
 				editLocking,
+				icon: icon.trim(),
 				group: group.trim() || null,
+				hidden,
+				admin:
+					quickCreate !== (collection?.admin?.quickCreate ?? true)
+						? { ...collection?.admin, quickCreate: quickCreate ? undefined : false }
+						: undefined,
 				supports,
 				hasSeo,
 				commentsEnabled,
@@ -324,14 +348,17 @@ export function ContentTypeEditor({
 
 	const handleFieldSave = async (input: CreateFieldInput) => {
 		setFieldSaving(true);
+		setFieldSaveError(null);
 		try {
 			if (editingField) {
-				onUpdateField?.(editingField.slug, input);
+				await onUpdateField?.(editingField.slug, input);
 			} else {
-				onAddField?.(input);
+				await onAddField?.(input);
 			}
 			setFieldEditorOpen(false);
 			setEditingField(undefined);
+		} catch (err) {
+			setFieldSaveError(getMutationError(err));
 		} finally {
 			setFieldSaving(false);
 		}
@@ -345,11 +372,13 @@ export function ContentTypeEditor({
 	const handleEditField = (field: SchemaField) => {
 		if (field.unsupportedType) return;
 		setEditingField(field);
+		setFieldSaveError(null);
 		setFieldEditorOpen(true);
 	};
 
 	const handleAddField = () => {
 		setEditingField(undefined);
+		setFieldSaveError(null);
 		setFieldEditorOpen(true);
 	};
 
@@ -459,6 +488,7 @@ export function ContentTypeEditor({
 										onChange={(e) => setSlug(e.target.value)}
 										placeholder="posts"
 										disabled={!isNew}
+										error={slugError}
 									/>
 									<p className="text-xs text-kumo-subtle mt-2">{t`Used in URLs and API endpoints`}</p>
 								</div>
@@ -514,6 +544,11 @@ export function ContentTypeEditor({
 										{t`Pattern must include a ${"{slug}"} placeholder`}
 									</p>
 								)}
+								{urlPatternSharesSegment && (
+									<p className="text-xs text-kumo-danger mt-2">
+										{t`Each path segment can contain at most one placeholder, e.g. ${"/{year}/{slug}"}`}
+									</p>
+								)}
 								<p className="text-xs text-kumo-subtle mt-1">
 									{t`Pattern for generating URLs, e.g. /blog/${"{slug}"}. Tokens: ${"{slug}"}, ${"{id}"}, and date tokens ${"{year}"}/${"{month}"}/${"{day}"} (also ${"{hour}"}/${"{minute}"}/${"{second}"}) from the publish date — e.g. ${"/{year}/{month}/{day}/{slug}.html"} for WordPress-style permalinks.`}
 								</p>
@@ -533,6 +568,43 @@ export function ContentTypeEditor({
 										{t`Content types with the same group share a collapsible folder in the sidebar`}
 									</p>
 								</div>
+								<div>
+									<Input
+										label={t`Icon`}
+										value={icon}
+										onChange={(e) => setIcon(e.target.value)}
+										disabled={isFromCode}
+									/>
+									<p className="text-xs text-kumo-subtle mt-1">
+										{t`Phosphor icon name, e.g. calendar-blank or trophy`}
+									</p>
+								</div>
+								<Switch
+									checked={hidden}
+									onCheckedChange={setHidden}
+									disabled={isFromCode}
+									label={
+										<div>
+											<span className="text-sm font-medium">{t`Hide from navigation`}</span>
+											<p className="text-xs text-kumo-subtle">
+												{t`Removes the sidebar entry, command palette link, and dashboard quick action; entries stay reachable by URL, API, and plugins`}
+											</p>
+										</div>
+									}
+								/>
+								<Switch
+									checked={quickCreate}
+									onCheckedChange={setQuickCreate}
+									disabled={isFromCode}
+									label={
+										<div>
+											<span className="text-sm font-medium">{t`Quick action on the dashboard`}</span>
+											<p className="text-xs text-kumo-subtle">
+												{t`Shows a button for creating a new entry`}
+											</p>
+										</div>
+									}
+								/>
 							</div>
 
 							<div className="space-y-3">
@@ -767,10 +839,14 @@ export function ContentTypeEditor({
 			{/* Field editor dialog */}
 			<FieldEditor
 				open={fieldEditorOpen}
-				onOpenChange={setFieldEditorOpen}
+				onOpenChange={(nextOpen) => {
+					setFieldEditorOpen(nextOpen);
+					if (!nextOpen) setFieldSaveError(null);
+				}}
 				field={editingField}
 				onSave={handleFieldSave}
 				isSaving={fieldSaving}
+				saveError={fieldSaveError}
 				collectionSlug={collection?.slug}
 				onCreateRelation={onCreateRelation}
 			/>

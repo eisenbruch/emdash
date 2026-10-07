@@ -10,10 +10,12 @@
 
 import { randomUUID } from "node:crypto";
 
-import Database from "better-sqlite3";
 import type { DialectAdapter } from "kysely";
 import { Kysely, sql, SqliteDialect } from "kysely";
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
+
+import { NodeSqliteCompatDatabase as Database } from "#node-sqlite";
 
 import { DEFAULT_COMMENT_MODERATOR_PLUGIN_ID } from "../../../src/comments/moderator.js";
 import { LockingSqliteAdapter } from "../../../src/database/migration-lock.js";
@@ -132,6 +134,7 @@ describe("EmDashRuntime.create — cold boot", () => {
 				"rt.seedcheck",
 				"rt.plugins",
 				"rt.site",
+				"rt.hookselections",
 				"rt.sandbox",
 				"rt.hooks",
 				"rt.cron",
@@ -175,6 +178,77 @@ describe("EmDashRuntime.create — cold boot", () => {
 			);
 		} finally {
 			await runtime.stopCron();
+		}
+	});
+
+	it("runs the MCP route of a built plugin when the sandbox is bypassed", async () => {
+		const deps = createDeps();
+		deps.plugins = [];
+		deps.sandboxBypassed = true;
+		deps.sandboxedPluginEntries = [
+			{
+				id: "bypassed-mcp",
+				version: "1.0.0",
+				options: {},
+				code: `export default {
+					routes: {
+						echo: {
+							permission: "content:read",
+							methods: ["POST"],
+							handler: async ({ input }) => ({ echoed: input.value }),
+						},
+					},
+				};`,
+				capabilities: ["content:read"],
+				allowedHosts: [],
+				storage: {},
+				routes: [
+					{
+						name: "echo",
+						permission: "content:read",
+						methods: ["POST"],
+					},
+				],
+				mcp: {
+					tools: [
+						{
+							name: "echo",
+							description: "Echo a value.",
+							route: "echo",
+							permission: "content:read",
+							destructive: false,
+							inputSchema: z.toJSONSchema(z.object({ value: z.string() }), {
+								target: "draft-7",
+							}),
+							outputSchema: z.toJSONSchema(z.object({ echoed: z.string() }), {
+								target: "draft-7",
+							}),
+						},
+					],
+				},
+			},
+		];
+
+		const runtime = await EmDashRuntime.create(deps);
+		try {
+			const plugin = runtime.configuredPlugins.find(({ id }) => id === "bypassed-mcp");
+			const tool = plugin?.mcp?.tools.echo;
+			expect(tool?.input.safeParse({ value: "hello" }).success).toBe(true);
+			expect(tool?.input.safeParse({ value: 42 }).success).toBe(false);
+
+			const result = await runtime.handlePluginApiRoute(
+				"bypassed-mcp",
+				"POST",
+				"/echo",
+				new Request("http://test.local/_emdash/api/plugins/bypassed-mcp/echo", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ value: "hello" }),
+				}),
+			);
+			expect(result).toEqual({ success: true, status: 200, data: { echoed: "hello" } });
+		} finally {
+			await runtime.shutdown();
 		}
 	});
 
@@ -373,6 +447,95 @@ describe("EmDashRuntime.create — cold boot", () => {
 		}
 	});
 
+	it.each([
+		{
+			sandboxBypassed: false,
+			mode: "sandboxed",
+			manifests: [
+				"marketplace/market-active/1.2.0/manifest.json",
+				"registry/from-registry/2.0.0/manifest.json",
+			],
+		},
+		{
+			sandboxBypassed: true,
+			mode: "in-process",
+			manifests: ["marketplace/market-active/1.2.0/manifest.json"],
+		},
+	])(
+		"loads $mode installed plugins from the plugin states read once at cold start",
+		async ({ sandboxBypassed, manifests }) => {
+			const sqlite = new Database(":memory:");
+			const setupDb = new Kysely<EmDashDatabase>({
+				dialect: new SqliteDialect({ database: sqlite }),
+			});
+			await runMigrations(setupDb);
+			await setupDb
+				.insertInto("_plugin_state")
+				.values([
+					{
+						plugin_id: "market-active",
+						version: "1.0.0",
+						marketplace_version: "1.2.0",
+						status: "active",
+						source: "marketplace",
+					},
+					{
+						plugin_id: "market-inactive",
+						version: "1.0.0",
+						status: "inactive",
+						source: "marketplace",
+					},
+					{ plugin_id: "from-registry", version: "2.0.0", status: "active", source: "registry" },
+				])
+				.execute();
+			await setupDb
+				.insertInto("options")
+				.values({ name: "emdash:setup_complete", value: "true" })
+				.execute();
+
+			const pluginStateStatements: string[] = [];
+			const prepare = sqlite.prepare.bind(sqlite);
+			sqlite.prepare = ((statement: string) => {
+				if (statement.includes('"_plugin_state"')) pluginStateStatements.push(statement);
+				return prepare(statement);
+			}) as typeof sqlite.prepare;
+
+			const download = vi.fn(() => Promise.reject(new Error("not found")));
+			const runner = {
+				isAvailable: () => true,
+				isHealthy: () => true,
+				load: vi.fn(),
+				setEmailSend: vi.fn(),
+				terminateAll: vi.fn(),
+			};
+			const base = createDeps();
+			const deps: RuntimeDependencies = {
+				...base,
+				config: {
+					...base.config,
+					marketplace: "https://marketplace.example.com",
+					registry: "https://registry.example.com",
+					storage: { entrypoint: `test-storage-${randomUUID()}`, config: {} },
+				},
+				createDialect: () => new SqliteDialect({ database: sqlite }),
+				createStorage: () => ({ download }) as never,
+				sandboxEnabled: true,
+				sandboxBypassed,
+				createSandboxRunner: () => runner as never,
+			};
+
+			const runtime = await EmDashRuntime.create(deps);
+			try {
+				expect(download.mock.calls.map(([key]) => key)).toEqual(expect.arrayContaining(manifests));
+				expect(download).toHaveBeenCalledTimes(manifests.length);
+				expect(pluginStateStatements.filter((s) => s.startsWith("select"))).toHaveLength(1);
+			} finally {
+				await runtime.stopCron();
+				await setupDb.destroy();
+			}
+		},
+	);
+
 	// When a coalescing dialect is provided, the cold-start read phase must run
 	// on it (one batched round trip), not the singleton. Prove the routing: the
 	// coalescing db marks the provider inactive while the singleton leaves it
@@ -437,6 +600,60 @@ describe("EmDashRuntime.create — cold boot", () => {
 		}
 	});
 
+	it("resolves exclusive hooks from selections read in the cold-start batch", async () => {
+		const provider = (id: string) =>
+			definePlugin({
+				id,
+				version: "1.0.0",
+				capabilities: ["content:write", "content:read"],
+				hooks: {
+					"content:beforeSave": {
+						exclusive: true,
+						handler: vi.fn() as unknown as ContentBeforeSaveHandler,
+					},
+				},
+			});
+		const migratedDb = async (selection: string) => {
+			const sqlite = new Database(":memory:");
+			const setup = new Kysely<EmDashDatabase>({
+				dialect: new SqliteDialect({ database: sqlite }),
+			});
+			await runMigrations(setup);
+			await setup
+				.insertInto("options")
+				.values([
+					{ name: "emdash:setup_complete", value: "true" },
+					{
+						name: "emdash:exclusive_hook:content:beforeSave",
+						value: JSON.stringify(selection),
+					},
+				])
+				.execute();
+			return { sqlite, setup };
+		};
+		const singleton = await migratedDb("provider-a");
+		const coalescing = await migratedDb("provider-b");
+
+		const runtime = await EmDashRuntime.create({
+			...createDeps(),
+			plugins: [provider("provider-a"), provider("provider-b")],
+			createDialect: () => new SqliteDialect({ database: singleton.sqlite }),
+			createCoalescingDialect: () => new SqliteDialect({ database: coalescing.sqlite }),
+		});
+		try {
+			expect(runtime.hooks.getExclusiveSelection("content:beforeSave")).toBe("provider-b");
+		} finally {
+			await runtime.stopCron();
+			for (const handle of [singleton.setup, coalescing.setup]) {
+				try {
+					await handle.destroy();
+				} catch {
+					// already closed
+				}
+			}
+		}
+	});
+
 	// A failed migration must not be retried on every create() call: on
 	// Workers each request in a warm isolate re-enters create(), and without
 	// a backoff every request re-runs the failing migration against the
@@ -496,6 +713,28 @@ describe("EmDashRuntime.create — cold boot", () => {
 		await expect(EmDashRuntime.create(deps)).rejects.toBeInstanceOf(MigrationLockHeldError);
 		await expect(EmDashRuntime.create(deps)).rejects.toThrow(/backing off/i);
 		expect(dialectCalls).toBe(1);
+	});
+
+	it("retries immediately after an error reading migration state", async () => {
+		const unavailable = new Database(":memory:");
+		unavailable.close();
+		const healthy = new Database(":memory:");
+		await runMigrations(
+			new Kysely<EmDashDatabase>({ dialect: new SqliteDialect({ database: healthy }) }),
+		);
+
+		let dialectCalls = 0;
+		const deps: RuntimeDependencies = {
+			...createDeps(),
+			createDialect: () => {
+				dialectCalls += 1;
+				return new SqliteDialect({ database: dialectCalls === 1 ? unavailable : healthy });
+			},
+		};
+
+		await expect(EmDashRuntime.create(deps)).rejects.toThrow();
+		await expect(EmDashRuntime.create(deps)).resolves.toBeInstanceOf(EmDashRuntime);
+		expect(dialectCalls).toBe(2);
 	});
 
 	it("rechecks pending migrations without entering migration-failure backoff", async () => {

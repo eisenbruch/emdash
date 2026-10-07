@@ -182,7 +182,9 @@ export async function buildManifestCollections(
 				titleField: collection.titleField,
 				dateField: collection.dateField,
 				...(collection.hidden ? { hidden: true } : {}),
+				...(collection.icon ? { icon: collection.icon } : {}),
 				...(collection.group ? { group: collection.group } : {}),
+				...(collection.admin?.quickCreate === false ? { quickCreate: false } : {}),
 				listColumns: listColumns.length > 0 ? listColumns : undefined,
 				fields,
 			};
@@ -373,6 +375,11 @@ function dbFieldDescriptor(
 			if (limits) validation.multiple = boundReferenceIsMultiple(field.validation, limits);
 		}
 		entry.validation = validation;
+	}
+
+	// A bound reference is set through `references`; create refuses a value for it in `data`.
+	if (field.defaultValue !== undefined && !isStoragelessField(field)) {
+		entry.defaultValue = field.defaultValue;
 	}
 
 	return entry;

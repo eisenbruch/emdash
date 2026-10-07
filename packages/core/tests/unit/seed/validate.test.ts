@@ -1,3 +1,6 @@
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { describe, it, expect } from "vitest";
 
 import type { SeedFile } from "../../../src/seed/types.js";
@@ -122,6 +125,15 @@ describe("validateSeed", () => {
 			expect(result.errors).toContain('collections[1].slug: duplicate collection slug "posts"');
 		});
 
+		it("should reject a reserved collection slug", () => {
+			const result = validateSeed({
+				version: "1",
+				collections: [{ slug: "content", label: "Content", fields: [] }],
+			});
+			expect(result.valid).toBe(false);
+			expect(result.errors).toContain('collections[0].slug: collection slug "content" is reserved');
+		});
+
 		it("should reject a non-boolean routable value", () => {
 			const result = validateSeed({
 				version: "1",
@@ -130,6 +142,16 @@ describe("validateSeed", () => {
 
 			expect(result.valid).toBe(false);
 			expect(result.errors).toContain("collections[0].routable: must be a boolean");
+		});
+
+		it("rejects an icon name longer than the API accepts", () => {
+			const result = validateSeed({
+				version: "1",
+				collections: [{ slug: "posts", label: "Posts", icon: "x".repeat(65), fields: [] }],
+			});
+
+			expect(result.valid).toBe(false);
+			expect(result.errors).toContain("collections[0].icon: must be at most 64 characters");
 		});
 
 		it("should require fields to be an array", () => {
@@ -306,6 +328,23 @@ describe("validateSeed", () => {
 			expect(result.errors[0]).toContain('duplicate field slug "title"');
 		});
 
+		it("should reject a reserved field slug", () => {
+			const result = validateSeed({
+				version: "1",
+				collections: [
+					{
+						slug: "plugins",
+						label: "Plugins",
+						fields: [{ slug: "version", label: "Version", type: "string" }],
+					},
+				],
+			});
+			expect(result.valid).toBe(false);
+			expect(result.errors).toContain(
+				'collections[0].fields[0].slug: field slug "version" is reserved',
+			);
+		});
+
 		it("should accept valid collection with fields", () => {
 			const result = validateSeed({
 				version: "1",
@@ -371,6 +410,93 @@ describe("validateSeed", () => {
 			expect(result.errors).toContain(
 				"collections[0].admin.listColumns: must contain at most 4 items",
 			);
+		});
+
+		it("should reject a non-boolean quick-action setting", () => {
+			const result = validateSeed({
+				version: "1",
+				collections: [
+					{
+						slug: "posts",
+						label: "Posts",
+						admin: { quickCreate: "no" },
+						fields: [{ slug: "title", label: "Title", type: "string" }],
+					},
+				],
+			});
+
+			expect(result.valid).toBe(false);
+			expect(result.errors).toContain("collections[0].admin.quickCreate: must be a boolean");
+		});
+
+		function seedWithRepeater(repeater: Record<string, unknown>) {
+			return validateSeed({
+				version: "1",
+				collections: [
+					{
+						slug: "home",
+						label: "Home",
+						fields: [{ slug: "services", label: "Services", type: "repeater", ...repeater }],
+					},
+				],
+			});
+		}
+
+		it("warns about repeater sub-fields declared as fields instead of validation.subFields", () => {
+			const result = seedWithRepeater({
+				fields: [
+					{ slug: "title", type: "string", required: true },
+					{ slug: "description", type: "text" },
+				],
+			});
+
+			expect(result.valid).toBe(true);
+			expect(result.warnings).toEqual([
+				"collections[0].fields[0].fields: repeater sub-fields must be defined in validation.subFields; these fields are ignored",
+			]);
+		});
+
+		it("warns about a repeater without a non-empty sub-field array", () => {
+			for (const repeater of [
+				{},
+				{ validation: { subFields: [] } },
+				{ validation: { subFields: "title" } },
+			]) {
+				expect(seedWithRepeater(repeater)).toEqual({
+					valid: true,
+					errors: [],
+					warnings: [
+						"collections[0].fields[0].validation.subFields: repeater needs a non-empty array of sub-fields, so its rows have nothing to edit",
+					],
+				});
+			}
+		});
+
+		it("accepts a repeater with validation.subFields", () => {
+			const result = seedWithRepeater({
+				validation: { subFields: [{ slug: "title", label: "Title", type: "string" }] },
+			});
+
+			expect(result.valid).toBe(true);
+			expect(result.errors).toEqual([]);
+			expect(result.warnings).toEqual([]);
+		});
+
+		it("finds no repeater sub-field warnings in the repository's seeds", () => {
+			const root = resolve(import.meta.dirname, "../../../../..");
+			const seeds = ["templates", "demos", "infra", "fixtures"].flatMap((dir) =>
+				readdirSync(resolve(root, dir))
+					.map((name) => resolve(root, dir, name, "seed/seed.json"))
+					.filter((path) => existsSync(path)),
+			);
+			expect(seeds.length).toBeGreaterThan(0);
+			for (const path of seeds) {
+				const { warnings } = validateSeed(JSON.parse(readFileSync(path, "utf8")));
+				expect(
+					warnings.filter((warning) => /\.(?:fields|validation\.subFields): /.test(warning)),
+					path,
+				).toEqual([]);
+			}
 		});
 	});
 
@@ -931,6 +1057,40 @@ describe("validateSeed", () => {
 			expect(result.errors[0]).toContain('must be "content", "menu", or "component"');
 		});
 
+		it("warns that widget settings are not applied", () => {
+			const result = validateSeed({
+				version: "1",
+				widgetAreas: [
+					{
+						name: "sidebar",
+						label: "Sidebar",
+						widgets: [{ type: "component", componentId: "core:archives", settings: { limit: 6 } }],
+					},
+				],
+			});
+			expect(result.valid).toBe(true);
+			expect(result.warnings).toContain(
+				'widgetAreas[0].widgets[0].settings: not applied; widget options belong in "props"',
+			);
+		});
+
+		it("finds no widget settings in the repository's seeds", () => {
+			const root = resolve(import.meta.dirname, "../../../../..");
+			const seeds = ["templates", "demos", "infra", "fixtures"].flatMap((dir) =>
+				readdirSync(resolve(root, dir))
+					.map((name) => resolve(root, dir, name, "seed/seed.json"))
+					.filter((path) => existsSync(path)),
+			);
+			expect(seeds.length).toBeGreaterThan(0);
+			for (const path of seeds) {
+				const { warnings } = validateSeed(JSON.parse(readFileSync(path, "utf8")));
+				expect(
+					warnings.filter((warning) => /\.widgets\[\d+\]\.settings:/.test(warning)),
+					path,
+				).toEqual([]);
+			}
+		});
+
 		it("should require menuName for menu widgets", () => {
 			const result = validateSeed({
 				version: "1",
@@ -996,7 +1156,7 @@ describe("validateSeed", () => {
 				"redirects[0].source: must be a path starting with / (no protocol-relative URLs, path traversal, or newlines)",
 			);
 			expect(result.errors).toContain(
-				"redirects[0].destination: must be a path starting with / (no protocol-relative URLs, path traversal, or newlines)",
+				"redirects[0].destination: must be a path starting with / (no protocol-relative URLs, backslash prefixes, path traversal, or control characters)",
 			);
 		});
 
@@ -1021,12 +1181,57 @@ describe("validateSeed", () => {
 			expect(result.errors).toContain('redirects[1].source: duplicate redirect source "/old"');
 		});
 
+		it("should reject destinations a browser would resolve off-site", () => {
+			const result = validateSeed({
+				version: "1",
+				redirects: [
+					{ source: "/a", destination: "/\\evil.example" },
+					{ source: "/b", destination: "/\t/evil.example" },
+				],
+			});
+			expect(result.valid).toBe(false);
+			for (const i of [0, 1]) {
+				expect(result.errors).toContain(
+					`redirects[${i}].destination: must be a path starting with / (no protocol-relative URLs, backslash prefixes, path traversal, or control characters)`,
+				);
+			}
+		});
+
+		it("should reject malformed source patterns", () => {
+			const result = validateSeed({
+				version: "1",
+				redirects: [
+					{ source: "/[a][b][c][d][e][f]", destination: "/new" },
+					{ source: "/docs/[...rest]/edit", destination: "/new" },
+				],
+			});
+			expect(result.valid).toBe(false);
+			expect(result.errors).toContain(
+				"redirects[0].source: invalid pattern: Each segment can contain at most one placeholder",
+			);
+			expect(result.errors).toContain(
+				"redirects[1].source: invalid pattern: Catch-all [...param] must be in the last segment",
+			);
+		});
+
+		it("should reject destination placeholders the source does not capture", () => {
+			const result = validateSeed({
+				version: "1",
+				redirects: [{ source: "/old/[slug]", destination: "/new/[id]" }],
+			});
+			expect(result.valid).toBe(false);
+			expect(result.errors).toContain(
+				"redirects[0].destination: Destination references [id] which is not captured in the source pattern",
+			);
+		});
+
 		it("should accept valid redirects", () => {
 			const result = validateSeed({
 				version: "1",
 				redirects: [
 					{ source: "/old", destination: "/new" },
 					{ source: "/temp", destination: "/next", type: 302, enabled: false },
+					{ source: "/blog/[year]/[...path]", destination: "/posts/[year]/[...path]" },
 				],
 			});
 			expect(result.valid).toBe(true);
