@@ -31,6 +31,7 @@ import {
 	submissionsLoadError,
 	writeError,
 } from "./admin-errors.js";
+import { formatNotifyEmails, parseNotifyEmails } from "./notify-emails.js";
 
 // =============================================================================
 // Constants
@@ -454,6 +455,9 @@ function FormEditor({
 	const [slug, setSlug] = React.useState(form?.slug ?? "");
 	const [fields, setFields] = React.useState<FormField[]>(form?.pages[0]?.fields ?? []);
 	const [settings, setSettings] = React.useState<Partial<FormSettings>>(form?.settings ?? {});
+	const [notifyEmailsText, setNotifyEmailsText] = React.useState(() =>
+		formatNotifyEmails(form?.settings.notifyEmails),
+	);
 	const [saving, setSaving] = React.useState(false);
 	const [error, setError] = React.useState<string | null>(null);
 	const [turnstileStatus, setTurnstileStatus] = React.useState<{
@@ -534,6 +538,12 @@ function FormEditor({
 			}
 		}
 
+		const notify = parseNotifyEmails(notifyEmailsText);
+		if (notify.invalid.length > 0) {
+			setError(`Not a valid notification email: ${notify.invalid.join(", ")}`);
+			return;
+		}
+
 		setSaving(true);
 		setError(null);
 
@@ -543,7 +553,7 @@ function FormEditor({
 					name,
 					slug,
 					pages: [{ fields }],
-					settings,
+					settings: { ...settings, notifyEmails: notify.emails },
 				}
 			: {
 					name,
@@ -551,13 +561,13 @@ function FormEditor({
 					pages: [{ fields }],
 					settings: {
 						confirmationMessage: "Thank you for your submission.",
-						notifyEmails: [],
 						digestEnabled: false,
 						digestHour: 9,
 						retentionDays: 0,
 						spamProtection: "honeypot",
 						submitLabel: "Submit",
 						...settings,
+						notifyEmails: notify.emails,
 					},
 				};
 
@@ -704,6 +714,15 @@ function FormEditor({
 							value={settings.redirectUrl ?? ""}
 							onChange={(e) => setSettings((s) => ({ ...s, redirectUrl: e.target.value }))}
 							placeholder="https://example.com/thank-you"
+						/>
+					</div>
+					<div className="col-span-2">
+						<Input
+							label="Notification Emails"
+							description="Who is emailed about each new submission. Separate addresses with commas. Leave empty to send none. Sending needs an email provider."
+							value={notifyEmailsText}
+							onChange={(e) => setNotifyEmailsText(e.target.value)}
+							placeholder="editor@example.com, sales@example.com"
 						/>
 					</div>
 				</div>
