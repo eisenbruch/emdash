@@ -33,6 +33,7 @@ import {
 	hasStagedMetadata,
 	metadataToStage,
 	readStagedMetadata,
+	resolveTermGroups,
 	stagedMetadataKeys,
 	stagedMetadataView,
 	validateStagedMetadata,
@@ -3685,6 +3686,12 @@ export class EmDashRuntime {
 			actor?: ActorInfo;
 			migrateBlocks?: boolean;
 			replaceBlocks?: boolean;
+			/**
+			 * Term translation groups, by taxonomy, to stage in the entry's draft
+			 * whatever its publication state. Used by the content-terms route,
+			 * which names terms by id rather than by slug.
+			 */
+			stagedTerms?: Record<string, string[]>;
 		},
 	) {
 		const actor = body.actor ? { ...body.actor } : undefined;
@@ -3718,6 +3725,7 @@ export class EmDashRuntime {
 			actor: _discardedActor,
 			migrateBlocks,
 			replaceBlocks,
+			stagedTerms,
 			...bodyWithoutRev
 		} = body;
 		const blockWriteOptions = { migrateBlocks, replaceBlocks };
@@ -3733,7 +3741,10 @@ export class EmDashRuntime {
 			requestedMetadata.terms = bodyWithoutRev.taxonomies;
 		}
 		const collectionInfo =
-			bodyWithoutRev.data || bodyWithoutRev.references || hasStagedMetadata(requestedMetadata)
+			bodyWithoutRev.data ||
+			bodyWithoutRev.references ||
+			hasStagedMetadata(requestedMetadata) ||
+			stagedTerms
 				? await this.schemaRegistry.getCollectionWithFields(collection).catch(() => null)
 				: null;
 		const knownFieldSlugs = new Set((collectionInfo?.fields ?? []).map((f) => f.slug));
@@ -3843,12 +3854,18 @@ export class EmDashRuntime {
 
 		// SEO, credits and terms of an entry with a live version wait in its draft
 		// with the rest of its pending changes, so they go live when it is published.
+		const supportsRevisions = collectionInfo?.supports?.includes("revisions") ?? false;
+		if (stagedTerms && !supportsRevisions) {
+			return {
+				success: false as const,
+				error: {
+					code: "VALIDATION_ERROR",
+					message: `Collection "${collection}" does not keep drafts, so terms cannot be staged.`,
+				},
+			};
+		}
 		let stagedMetadata: StagedMetadata = {};
-		if (
-			resolvedItem &&
-			hasStagedMetadata(requestedMetadata) &&
-			collectionInfo?.supports?.includes("revisions")
-		) {
+		if (resolvedItem && hasStagedMetadata(requestedMetadata) && supportsRevisions) {
 			const draftData =
 				!resolvedItem.liveRevisionId && resolvedItem.draftRevisionId
 					? (await new RevisionRepository(this.db).findById(resolvedItem.draftRevisionId))?.data
@@ -3859,31 +3876,32 @@ export class EmDashRuntime {
 				draftData,
 			);
 		}
-		if (hasStagedMetadata(stagedMetadata)) {
-			if (stagedMetadata.seo && !collectionInfo?.hasSeo) {
-				return {
-					success: false as const,
-					error: {
-						code: "VALIDATION_ERROR",
-						message: `Collection "${collection}" does not have SEO enabled. Remove the seo field or enable SEO on this collection.`,
-					},
-				};
-			}
-			try {
-				await validateStagedMetadata(
+		const stagesRequestedTerms = stagedMetadata.terms !== undefined;
+		try {
+			if (stagedMetadata.terms) {
+				stagedMetadata.terms = await resolveTermGroups(
 					this.db,
 					resolvedItem?.locale ?? bodyWithoutRev.locale,
-					stagedMetadata,
+					stagedMetadata.terms,
 				);
-			} catch (error) {
-				if (error instanceof EmDashValidationError) {
-					return {
-						success: false as const,
-						error: { code: "VALIDATION_ERROR", message: error.message },
-					};
-				}
-				throw error;
 			}
+			if (stagedTerms) stagedMetadata.terms = { ...stagedMetadata.terms, ...stagedTerms };
+			if (hasStagedMetadata(stagedMetadata)) {
+				if (stagedMetadata.seo && !collectionInfo?.hasSeo) {
+					throw new EmDashValidationError(
+						`Collection "${collection}" does not have SEO enabled. Remove the seo field or enable SEO on this collection.`,
+					);
+				}
+				await validateStagedMetadata(this.db, stagedMetadata);
+			}
+		} catch (error) {
+			if (error instanceof EmDashValidationError) {
+				return {
+					success: false as const,
+					error: { code: "VALIDATION_ERROR", message: error.message },
+				};
+			}
+			throw error;
 		}
 
 		// Draft-aware revision handling (if collection supports revisions)
@@ -4080,7 +4098,7 @@ export class EmDashRuntime {
 		const stagedKeys = new Set<string>();
 		if (stagedMetadata.seo !== undefined) stagedKeys.add("seo");
 		if (stagedMetadata.bylines !== undefined) stagedKeys.add("bylines");
-		if (stagedMetadata.terms !== undefined) stagedKeys.add("taxonomies");
+		if (stagesRequestedTerms) stagedKeys.add("taxonomies");
 		const liveMetaTouched = Object.entries(bodyWithoutRev).some(
 			([key, value]) =>
 				value !== undefined && !DRAFT_ONLY_UPDATE_KEYS.has(key) && !stagedKeys.has(key),

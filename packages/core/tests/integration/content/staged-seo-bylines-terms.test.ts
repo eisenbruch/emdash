@@ -4,9 +4,14 @@
  * publish path, dropped with a discarded draft and brought back by a restore.
  */
 
+import { Role, type RoleLevel } from "@emdash-cms/auth";
+import type { APIContext } from "astro";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { dropDraftStagedTerms } from "../../../src/api/handlers/staged-metadata.js";
+import {
+	GET as getEntryTerms,
+	POST as postEntryTerms,
+} from "../../../src/astro/routes/api/content/[collection]/[id]/terms/[taxonomy].js";
 import { BylineRepository } from "../../../src/database/repositories/byline.js";
 import { ContentRepository } from "../../../src/database/repositories/content.js";
 import { RevisionRepository } from "../../../src/database/repositories/revision.js";
@@ -35,6 +40,8 @@ describeEachDialect("staged SEO, bylines and terms", (dialect) => {
 	let runtime: EmDashRuntime;
 	let alice: string;
 	let bob: string;
+	/** Each term's translation group, by slug: what a draft stages. */
+	let group: Record<string, string>;
 
 	beforeEach(async () => {
 		ctx = await setupForDialect(dialect);
@@ -52,13 +59,15 @@ describeEachDialect("staged SEO, bylines and terms", (dialect) => {
 		bob = (await bylines.create({ slug: "bob", displayName: "Bob" })).id;
 
 		const terms = new TaxonomyRepository(ctx.db);
+		group = {};
 		for (const [name, slug] of [
 			["category", "news"],
 			["category", "guides"],
 			["tag", "ai"],
 			["tag", "seo"],
 		] as const) {
-			await terms.create({ name, slug, label: slug, locale: "en" });
+			const term = await terms.create({ name, slug, label: slug, locale: "en" });
+			group[slug] = term.translationGroup ?? term.id;
 		}
 
 		runtime = createTestRuntime(ctx.db);
@@ -137,7 +146,7 @@ describeEachDialect("staged SEO, bylines and terms", (dialect) => {
 			const draft = await draftData(id);
 			expect(draft?._seo).toEqual({ title: "Staged title" });
 			expect(draft?._bylines).toEqual([{ bylineId: bob, roleLabel: "Editor" }]);
-			expect(draft?._terms).toEqual({ category: ["guides"] });
+			expect(draft?._terms).toEqual({ category: [group.guides] });
 		});
 
 		it("returns the staged values to a draft reader and the live ones otherwise", async () => {
@@ -183,7 +192,7 @@ describeEachDialect("staged SEO, bylines and terms", (dialect) => {
 			const draft = await draftData(id);
 			expect(draft?._seo).toEqual({ title: "Staged title", description: "Staged description" });
 			expect(draft?._bylines).toEqual([{ bylineId: bob, roleLabel: "Editor" }]);
-			expect(draft?._terms).toEqual({ category: ["guides"], tag: ["seo"] });
+			expect(draft?._terms).toEqual({ category: [group.guides], tag: [group.seo] });
 		});
 
 		it("refuses a term or byline its table write would refuse, staging nothing", async () => {
@@ -289,7 +298,7 @@ describeEachDialect("staged SEO, bylines and terms", (dialect) => {
 
 		ok(await runtime.handleRevisionRestore(stagedRevisionId!, "user-1"));
 		await expectLiveUnchanged(id);
-		expect((await draftData(id))?._terms).toEqual({ category: ["guides"] });
+		expect((await draftData(id))?._terms).toEqual({ category: [group.guides] });
 
 		ok(await runtime.handleContentPublish("post", id));
 		await expectStagedLive(id);
@@ -309,22 +318,116 @@ describeEachDialect("staged SEO, bylines and terms", (dialect) => {
 		});
 	});
 
-	it("lets a direct write to one taxonomy replace what the draft staged for it", async () => {
-		const id = await createPublished("Direct terms");
-		ok(
-			await runtime.handleContentUpdate("post", id, {
-				taxonomies: { category: ["guides"], tag: ["seo"] },
-			}),
-		);
-		const entry = await new ContentRepository(ctx.db).findById("post", id);
-		const news = await new TaxonomyRepository(ctx.db).findBySlug("category", "news", "en");
-		await new TaxonomyRepository(ctx.db).setTermsForEntry("post", id, "category", [news!.id]);
+	describe("the content-terms route", () => {
+		const editor = { id: "u-editor", email: "e@example.com", name: "Editor", role: Role.ADMIN };
+		const subscriber = {
+			id: "u-reader",
+			email: "r@example.com",
+			name: "Reader",
+			role: Role.SUBSCRIBER,
+		};
 
-		await dropDraftStagedTerms(ctx.db, entry!.draftRevisionId, "category");
-		expect((await draftData(id))?._terms).toEqual({ tag: ["seo"] });
+		function routeContext(
+			id: string,
+			taxonomy: string,
+			user: { id: string; role: RoleLevel },
+			termIds?: string[],
+		): APIContext {
+			const url = new URL(`http://localhost/_emdash/api/content/post/${id}/terms/${taxonomy}`);
+			return {
+				params: { collection: "post", id, taxonomy },
+				url,
+				request: new Request(url, {
+					method: termIds ? "POST" : "GET",
+					headers: { "Content-Type": "application/json", "X-EmDash-Request": "1" },
+					body: termIds ? JSON.stringify({ termIds }) : undefined,
+				}),
+				locals: {
+					emdash: {
+						db: ctx.db,
+						handleContentGet: runtime.handleContentGet.bind(runtime),
+						handleContentUpdate: runtime.handleContentUpdate.bind(runtime),
+					},
+					user,
+				},
+				// eslint-disable-next-line typescript/no-unsafe-type-assertion -- minimal stub for tests
+			} as unknown as APIContext;
+		}
 
-		ok(await runtime.handleContentPublish("post", id));
-		expect(await liveTermSlugs(id, "category")).toEqual(["news"]);
-		expect(await liveTermSlugs(id, "tag")).toEqual(["seo"]);
+		async function termId(taxonomy: string, slug: string) {
+			const term = await new TaxonomyRepository(ctx.db).findBySlug(taxonomy, slug, "en");
+			if (!term) throw new Error(`No term ${slug}`);
+			return term.id;
+		}
+
+		async function readTerms(id: string, user: { id: string; role: RoleLevel }) {
+			const response = await getEntryTerms(routeContext(id, "category", user));
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as { data: { terms: Array<{ slug: string }> } };
+			return body.data.terms.map((term) => term.slug).toSorted();
+		}
+
+		it("stages a published entry's terms in its draft", async () => {
+			const id = await createPublished("Route staged");
+
+			const response = await postEntryTerms(
+				routeContext(id, "category", editor, [await termId("category", "guides")]),
+			);
+
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as {
+				data: { staged: boolean; _rev?: string; terms: Array<{ slug: string }> };
+			};
+			expect(body.data.staged).toBe(true);
+			expect(body.data._rev).toEqual(expect.any(String));
+			expect(body.data.terms.map((term) => term.slug)).toEqual(["guides"]);
+			expect(await liveTermSlugs(id, "category")).toEqual(["news"]);
+			expect((await draftData(id))?._terms).toEqual({ category: [group.guides] });
+			const entry = await new ContentRepository(ctx.db).findById("post", id);
+			expect(entry?.draftRevisionId).not.toBeNull();
+			expect(entry?.draftRevisionId).not.toBe(entry?.liveRevisionId);
+		});
+
+		it("writes a never-published entry's terms directly", async () => {
+			const created = ok(
+				await runtime.handleContentCreate("post", { data: { title: "Fresh" }, slug: "fresh" }),
+			);
+			const id = created.item.id;
+
+			const response = await postEntryTerms(
+				routeContext(id, "category", editor, [await termId("category", "guides")]),
+			);
+
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as { data: { staged: boolean } };
+			expect(body.data.staged).toBe(false);
+			expect(await liveTermSlugs(id, "category")).toEqual(["guides"]);
+			expect((await draftData(id))?._terms).toBeUndefined();
+		});
+
+		it("applies the staged terms when the entry is published", async () => {
+			const id = await createPublished("Route publish");
+			await postEntryTerms(
+				routeContext(id, "category", editor, [
+					await termId("category", "guides"),
+					await termId("category", "news"),
+				]),
+			);
+
+			ok(await runtime.handleContentPublish("post", id));
+
+			expect(await liveTermSlugs(id, "category")).toEqual(["guides", "news"]);
+			expect(await liveTermSlugs(id, "tag")).toEqual(["ai"]);
+		});
+
+		it("shows staged terms to a draft reader and live terms to anyone else", async () => {
+			const id = await createPublished("Route read");
+			await postEntryTerms(
+				routeContext(id, "category", editor, [await termId("category", "guides")]),
+			);
+
+			expect(await readTerms(id, editor)).toEqual(["guides"]);
+			expect(await readTerms(id, subscriber)).toEqual(["news"]);
+		});
 	});
 });

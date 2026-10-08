@@ -2402,7 +2402,7 @@ export async function handleContentPublish(
 				}
 			}
 			if (existing && promotesMetadata) {
-				await validateStagedMetadata(trx, existing.locale ?? undefined, stagedMetadata);
+				await validateStagedMetadata(trx, stagedMetadata);
 			}
 
 			// Promote before the publishing statement, which is also what clears
@@ -2439,14 +2439,9 @@ export async function handleContentPublish(
 				);
 			}
 			if (existing && promotesMetadata) {
-				await applyStagedMetadata(
-					trx,
-					collection,
-					resolvedId,
-					existing.locale ?? undefined,
-					stagedMetadata,
-					{ hasSeo: await collectionHasSeo(trx, collection) },
-				);
+				await applyStagedMetadata(trx, collection, resolvedId, stagedMetadata, {
+					hasSeo: await collectionHasSeo(trx, collection),
+				});
 			}
 
 			const published = await repo.publish(

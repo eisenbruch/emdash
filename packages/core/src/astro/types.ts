@@ -378,6 +378,8 @@ export interface EmDashHandlers {
 			migrateBlocks?: boolean;
 			replaceBlocks?: boolean;
 			actor?: { id: string; role: number };
+			/** Term translation groups, by taxonomy, to stage in the entry's draft. */
+			stagedTerms?: Record<string, string[]>;
 		},
 	) => Promise<HandlerResponse>;
 

@@ -9,8 +9,8 @@ import { hasPermission } from "@emdash-cms/auth";
 import type { APIRoute } from "astro";
 
 import { requirePerm, requireOwnerPerm } from "#api/authorize.js";
-import { apiError, apiSuccess, handleError, requireDb } from "#api/error.js";
-import { dropDraftStagedTerms, readDraftStagedTerms } from "#api/handlers/staged-metadata.js";
+import { apiError, apiSuccess, handleError, requireDb, unwrapResult } from "#api/error.js";
+import { readDraftStagedTerms } from "#api/handlers/staged-metadata.js";
 import { parseBody, isParseError } from "#api/parse.js";
 import { contentTermsBody } from "#api/schemas.js";
 import { taxonomyTag } from "#cache/chrome-tags.js";
@@ -89,21 +89,16 @@ export const GET: APIRoute = async ({ params, locals }) => {
 
 		// Terms a draft stages are what the entry will have once it is published,
 		// which is what an editor working on the draft needs to see.
-		const stagedSlugs = hasPermission(user, "content:read_drafts")
+		const stagedGroups = hasPermission(user, "content:read_drafts")
 			? await readDraftStagedTerms(emdash.db, entry.draftRevisionId, taxonomy)
 			: undefined;
-		if (stagedSlugs) {
-			const staged: TaxonomyAssignmentResolution[] = [];
-			for (const slug of stagedSlugs) {
-				const term = await repo.findBySlug(taxonomy, slug, locale);
-				if (!term) continue;
-				staged.push({
-					translationGroup: term.translationGroup ?? term.id,
-					term,
-					availableLocales: [term.locale],
-					translations: [],
-				});
-			}
+		if (stagedGroups) {
+			const staged = await repo.resolveAssignmentGroups(
+				taxonomy,
+				stagedGroups,
+				locale,
+				defaultLocale,
+			);
 			return apiSuccess(assignmentResponse(staged, locale));
 		}
 
@@ -185,6 +180,7 @@ export const POST: APIRoute = async ({ params, request, locals, cache }) => {
 		const repo = new TaxonomyRepository(emdash.db);
 
 		// Verify all term IDs exist and belong to the correct taxonomy
+		const groups: string[] = [];
 		for (const termId of termIds) {
 			const term = await repo.findById(termId);
 			if (!term) {
@@ -197,13 +193,57 @@ export const POST: APIRoute = async ({ params, request, locals, cache }) => {
 					400,
 				);
 			}
+			const group = term.translationGroup ?? term.id;
+			if (!groups.includes(group)) groups.push(group);
+		}
+
+		// An entry with a live version, or whose draft already stages this
+		// taxonomy, keeps the change in its draft until it is published.
+		const draftRevisionId =
+			typeof existingItem?.draftRevisionId === "string" ? existingItem.draftRevisionId : null;
+		const collectionRow = await emdash.db
+			.selectFrom("_emdash_collections")
+			.select("supports")
+			.where("slug", "=", collection)
+			.executeTakeFirst();
+		const supports: unknown = collectionRow?.supports ? JSON.parse(collectionRow.supports) : [];
+		const stages =
+			Array.isArray(supports) &&
+			supports.includes("revisions") &&
+			(typeof existingItem?.liveRevisionId === "string" ||
+				(await readDraftStagedTerms(emdash.db, draftRevisionId, taxonomy)) !== undefined);
+		if (stages) {
+			if (!emdash.handleContentUpdate) {
+				return apiError("NOT_CONFIGURED", "EmDash is not initialized", 500);
+			}
+			const staged = await emdash.handleContentUpdate(collection, canonicalId, {
+				stagedTerms: { [taxonomy]: groups },
+				actor: user ? { id: user.id, role: user.role } : undefined,
+			});
+			if (!staged.success) return unwrapResult(staged);
+			const stagedData: unknown = staged.data;
+			const rev =
+				typeof stagedData === "object" &&
+				stagedData !== null &&
+				"_rev" in stagedData &&
+				typeof stagedData._rev === "string"
+					? stagedData._rev
+					: undefined;
+			const assignments = await repo.resolveAssignmentGroups(
+				taxonomy,
+				groups,
+				entryLocale,
+				getI18nConfig()?.defaultLocale ?? "en",
+			);
+			return apiSuccess({
+				...assignmentResponse(assignments, entryLocale),
+				staged: true,
+				_rev: rev,
+			});
 		}
 
 		// Set the terms (replaces existing) using the canonical ID
 		await repo.setTermsForEntry(collection, canonicalId, taxonomy, termIds);
-		const draftRevisionId =
-			typeof existingItem?.draftRevisionId === "string" ? existingItem.draftRevisionId : null;
-		await dropDraftStagedTerms(emdash.db, draftRevisionId, taxonomy);
 
 		// Term assignments changed — invalidate the hasAnyTermAssignments cache
 		// so hydration on subsequent reads issues a fresh query.
@@ -229,7 +269,7 @@ export const POST: APIRoute = async ({ params, request, locals, cache }) => {
 			getI18nConfig()?.defaultLocale ?? "en",
 		);
 
-		return apiSuccess(assignmentResponse(assignments, entryLocale));
+		return apiSuccess({ ...assignmentResponse(assignments, entryLocale), staged: false });
 	} catch (error) {
 		return handleError(error, "Failed to set entry terms", "TERMS_SET_ERROR");
 	}

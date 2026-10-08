@@ -135,14 +135,9 @@ export async function handleRevisionRestore(
 		const stagedReferences = readStagedReferences(revision.data);
 		const stagedMetadata = readStagedMetadata(revision.data);
 		const restoresMetadata = hasStagedMetadata(stagedMetadata);
-		const entry =
-			stagedReferences || restoresMetadata
-				? await new ContentRepository(db).findById(revision.collection, revision.entryId)
-				: null;
-		if (entry && restoresMetadata) {
-			await validateStagedMetadata(db, entry.locale ?? undefined, stagedMetadata);
-		}
+		if (restoresMetadata) await validateStagedMetadata(db, stagedMetadata);
 		if (stagedReferences) {
+			const entry = await new ContentRepository(db).findById(revision.collection, revision.entryId);
 			if (entry?.translationGroup) {
 				const valid = await validateStagedReferences(
 					db,
@@ -178,14 +173,9 @@ export async function handleRevisionRestore(
 				.select("has_seo")
 				.where("slug", "=", revision.collection)
 				.executeTakeFirst();
-			await applyStagedMetadata(
-				db,
-				revision.collection,
-				item.id,
-				item.locale ?? undefined,
-				stagedMetadata,
-				{ hasSeo: hasSeo?.has_seo === 1 },
-			);
+			await applyStagedMetadata(db, revision.collection, item.id, stagedMetadata, {
+				hasSeo: hasSeo?.has_seo === 1,
+			});
 		}
 
 		const pruneRepo = new RevisionRepository(db);
