@@ -222,6 +222,9 @@ export const submitSchema = z.object({
 		.optional(),
 });
 
+/** The `forms_list` MCP tool takes no arguments; the route it binds to has no input. */
+export const formsListToolSchema = z.object({});
+
 export const submissionsListSchema = z.object({
 	formId: z.string().min(1),
 	status: z.enum(["new", "read", "archived"]).optional(),
