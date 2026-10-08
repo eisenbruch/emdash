@@ -85,14 +85,20 @@ describe("diffPortableText", () => {
 			[para("a", "Keep."), para("c", "New one."), { _type: "image", alt: "Barn" }],
 		);
 		expect(result?.changes).toEqual([
-			{
-				kind: "changed",
-				segments: [
-					["-", "Drop."],
-					["+", "New one."],
-				],
-			},
+			{ kind: "removed", text: "Drop." },
+			{ kind: "added", text: "New one." },
 			{ kind: "added", text: "[image: Barn]" },
+		]);
+	});
+
+	it("shows a rewritten block as old then new rather than interleaved words", () => {
+		const result = diffPortableText(
+			[para("a", "Same."), para("b", "The quick brown fox jumps over the lazy dog.")],
+			[para("a", "Same."), para("c", "Totally different sentence about horses instead.")],
+		);
+		expect(result?.changes).toEqual([
+			{ kind: "removed", text: "The quick brown fox jumps over the lazy dog." },
+			{ kind: "added", text: "Totally different sentence about horses instead." },
 		]);
 	});
 

@@ -15,6 +15,8 @@ export type BodyChange =
 	| { kind: "removed"; text: string };
 
 /** Above this many comparisons (rows x columns) an LCS table is not built; callers fall back to the full values. */
+/** A paired block keeping less than this share of its text reads better as old then new than as interleaved words. */
+const MIN_KEPT_SHARE = 0.25;
 const MAX_LCS_CELLS = 4_000_000;
 const HEADING_STYLE = /^h[1-6]$/;
 const WHITESPACE_RUN = /(\s+)/;
@@ -146,7 +148,15 @@ export function diffPortableText(
 	const flush = () => {
 		const paired = Math.min(removed.length, added.length);
 		for (let i = 0; i < paired; i++) {
-			changes.push({ kind: "changed", segments: diffWords(removed[i]!, added[i]!) });
+			const before = removed[i]!;
+			const after = added[i]!;
+			const segments = diffWords(before, after);
+			const kept = segments.reduce((n, [op, text]) => (op === "=" ? n + text.length : n), 0);
+			if (kept < MIN_KEPT_SHARE * Math.max(before.length, after.length)) {
+				changes.push({ kind: "removed", text: before }, { kind: "added", text: after });
+			} else {
+				changes.push({ kind: "changed", segments });
+			}
 		}
 		for (const text of removed.slice(paired)) changes.push({ kind: "removed", text });
 		for (const text of added.slice(paired)) changes.push({ kind: "added", text });
