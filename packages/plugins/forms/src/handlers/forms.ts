@@ -220,6 +220,13 @@ export async function formsDuplicateHandler(ctx: RouteContext<FormDuplicateInput
 
 	await forms(ctx).put(id, duplicate);
 
+	// The copy carries the digest setting, so it needs its own task
+	if (duplicate.settings.digestEnabled && ctx.cron) {
+		await ctx.cron.schedule(digestTaskName(id), {
+			schedule: `0 ${duplicate.settings.digestHour} * * *`,
+		});
+	}
+
 	return { id, ...duplicate };
 }
 

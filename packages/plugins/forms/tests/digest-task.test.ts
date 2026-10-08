@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { digestTaskName, formIdFromDigestTask } from "../src/digest-task.js";
-import { formsCreateHandler, formsUpdateHandler } from "../src/handlers/forms.js";
-import { formCreateSchema, formUpdateSchema } from "../src/schemas.js";
+import {
+	formsCreateHandler,
+	formsDuplicateHandler,
+	formsUpdateHandler,
+} from "../src/handlers/forms.js";
+import { formCreateSchema, formDuplicateSchema, formUpdateSchema } from "../src/schemas.js";
 import type { FormDefinition } from "../src/types.js";
 
 /** The rule `ctx.cron` applies to a task name (`validateTaskName` in core's `plugins/cron.ts`). */
@@ -76,6 +80,26 @@ describe("the daily digest's cron task", () => {
 
 		const off = await update({ digestEnabled: false });
 		expect(off.cancel).toHaveBeenCalledWith(`digest-${id}`);
+	});
+
+	it("is scheduled for a copy of a form with the digest on", async () => {
+		const first = context(
+			formCreateSchema.parse({
+				name: "Contact",
+				slug: "contact",
+				pages: [{ fields }],
+				settings: { digestEnabled: true, digestHour: 7 },
+			}),
+		);
+		const { id } = await formsCreateHandler(first.ctx);
+
+		const copy = context(formDuplicateSchema.parse({ id }), first.stored);
+		const duplicated = await formsDuplicateHandler(copy.ctx);
+
+		expect(duplicated.id).not.toBe(id);
+		expect(copy.schedule).toHaveBeenCalledWith(`digest-${duplicated.id}`, {
+			schedule: "0 7 * * *",
+		});
 	});
 
 	it("has a name the plugin maps back to its form", () => {
