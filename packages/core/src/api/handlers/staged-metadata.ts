@@ -14,7 +14,7 @@ import type { Kysely } from "kysely";
 import { BylineRepository, type ContentBylineInput } from "../../database/repositories/byline.js";
 import { RevisionRepository } from "../../database/repositories/revision.js";
 import { SeoRepository } from "../../database/repositories/seo.js";
-import { TaxonomyRepository } from "../../database/repositories/taxonomy.js";
+import { TaxonomyRepository, type Taxonomy } from "../../database/repositories/taxonomy.js";
 import {
 	EmDashValidationError,
 	type BylineSummary,
@@ -29,12 +29,18 @@ import { invalidateTermCache } from "../../taxonomies/index.js";
 export const STAGED_SEO_KEY = "_seo";
 /** The byline credits a draft stages, in the shape the content API accepts them. */
 export const STAGED_BYLINES_KEY = "_bylines";
-/** The taxonomy terms a draft stages: taxonomy name to term slugs, as the API accepts them. */
+/**
+ * The taxonomy terms a draft stages: taxonomy name to term translation groups,
+ * the value an assignment stores. A save names terms by slug in the entry's
+ * locale and the editor names them by row id, possibly in another locale; a
+ * group holds either, and survives a term being renamed before publication.
+ */
 export const STAGED_TERMS_KEY = "_terms";
 
 export interface StagedMetadata {
 	seo?: ContentSeoInput;
 	bylines?: ContentBylineInput[];
+	/** Taxonomy name to term translation groups. */
 	terms?: Record<string, string[]>;
 }
 
@@ -151,26 +157,26 @@ export function stagedMetadataKeys(
 }
 
 /**
- * Resolve a `{ taxonomyName: [slug, ...] }` map to term IDs, by taxonomy, in
+ * Resolve a `{ taxonomyName: [slug, ...] }` map to terms, by taxonomy, in
  * `locale`. Passing `undefined` lets `findBySlug` fall back to its default
  * (lowest locale code), so callers on single-locale sites need not know it.
  *
  * Throws EmDashValidationError on an unknown slug or a wrong shape.
  */
-export async function resolveTaxonomyTerms(
+async function resolveTaxonomyTerms(
 	db: Kysely<Database>,
 	locale: string | undefined,
 	taxonomies: Record<string, string[]>,
-): Promise<Map<string, string[]>> {
+): Promise<Map<string, Taxonomy[]>> {
 	const taxRepo = new TaxonomyRepository(db);
-	const resolved = new Map<string, string[]>();
+	const resolved = new Map<string, Taxonomy[]>();
 
 	for (const [taxonomyName, slugs] of Object.entries(taxonomies)) {
 		if (!Array.isArray(slugs)) {
 			throw new EmDashValidationError(`taxonomies.${taxonomyName} must be an array of term slugs`);
 		}
 
-		const termIds: string[] = [];
+		const terms: Taxonomy[] = [];
 		for (const slug of slugs) {
 			if (typeof slug !== "string" || slug.length === 0) {
 				throw new EmDashValidationError(
@@ -185,9 +191,9 @@ export async function resolveTaxonomyTerms(
 					}`,
 				);
 			}
-			termIds.push(term.id);
+			terms.push(term);
 		}
-		resolved.set(taxonomyName, termIds);
+		resolved.set(taxonomyName, terms);
 	}
 
 	return resolved;
@@ -207,8 +213,13 @@ export async function assignTaxonomies(
 ): Promise<void> {
 	const resolved = await resolveTaxonomyTerms(db, locale, taxonomies);
 	const taxRepo = new TaxonomyRepository(db);
-	for (const [taxonomyName, termIds] of resolved) {
-		await taxRepo.setTermsForEntry(collection, entryId, taxonomyName, termIds);
+	for (const [taxonomyName, terms] of resolved) {
+		await taxRepo.setTermsForEntry(
+			collection,
+			entryId,
+			taxonomyName,
+			terms.map((term) => term.id),
+		);
 	}
 
 	// Match the REST route's behaviour: taxonomy term assignments changed,
@@ -217,12 +228,28 @@ export async function assignTaxonomies(
 }
 
 /**
+ * The term translation groups a `{ taxonomyName: [slug, ...] }` map names, in
+ * `locale`, in the shape a draft stages. Throws EmDashValidationError as
+ * `assignTaxonomies` would.
+ */
+export async function resolveTermGroups(
+	db: Kysely<Database>,
+	locale: string | undefined,
+	taxonomies: Record<string, string[]>,
+): Promise<Record<string, string[]>> {
+	const groups: Record<string, string[]> = {};
+	for (const [taxonomyName, terms] of await resolveTaxonomyTerms(db, locale, taxonomies)) {
+		groups[taxonomyName] = [...new Set(terms.map((term) => term.translationGroup ?? term.id))];
+	}
+	return groups;
+}
+
+/**
  * Refuse metadata that its table write would refuse, without writing it: a
- * byline id that does not exist, or a term slug that does not resolve.
+ * byline id that does not exist, or a term group with no term in its taxonomy.
  */
 export async function validateStagedMetadata(
 	db: Kysely<Database>,
-	locale: string | undefined,
 	staged: StagedMetadata,
 ): Promise<void> {
 	if (staged.bylines && staged.bylines.length > 0) {
@@ -236,7 +263,22 @@ export async function validateStagedMetadata(
 			throw new EmDashValidationError("One or more byline IDs do not exist");
 		}
 	}
-	if (staged.terms) await resolveTaxonomyTerms(db, locale, staged.terms);
+	for (const [taxonomyName, groups] of Object.entries(staged.terms ?? {})) {
+		const wanted = new Set(groups);
+		if (wanted.size === 0) continue;
+		const rows = await db
+			.selectFrom("taxonomies")
+			.select("translation_group")
+			.distinct()
+			.where("name", "=", taxonomyName)
+			.where("translation_group", "in", [...wanted])
+			.execute();
+		if (rows.length !== wanted.size) {
+			throw new EmDashValidationError(
+				`One or more ${taxonomyName} terms no longer exist; choose the terms again`,
+			);
+		}
+	}
 }
 
 /**
@@ -247,7 +289,6 @@ export async function applyStagedMetadata(
 	db: Kysely<Database>,
 	collection: string,
 	entryId: string,
-	locale: string | undefined,
 	staged: StagedMetadata,
 	options: { hasSeo: boolean },
 ): Promise<void> {
@@ -257,10 +298,16 @@ export async function applyStagedMetadata(
 	if (staged.bylines) {
 		await new BylineRepository(db).setContentBylines(collection, entryId, staged.bylines);
 	}
-	if (staged.terms) await assignTaxonomies(db, collection, entryId, locale, staged.terms);
+	if (staged.terms) {
+		const taxRepo = new TaxonomyRepository(db);
+		for (const [taxonomyName, groups] of Object.entries(staged.terms)) {
+			await taxRepo.setTermsForEntry(collection, entryId, taxonomyName, groups);
+		}
+		invalidateTermCache();
+	}
 }
 
-/** The term slugs an entry's draft stages for one taxonomy, when it stages that taxonomy. */
+/** The term groups an entry's draft stages for one taxonomy, when it stages that taxonomy. */
 export async function readDraftStagedTerms(
 	db: Kysely<Database>,
 	draftRevisionId: string | null,
@@ -269,30 +316,6 @@ export async function readDraftStagedTerms(
 	if (!draftRevisionId) return undefined;
 	const revision = await new RevisionRepository(db).findById(draftRevisionId);
 	return readStagedMetadata(revision?.data).terms?.[taxonomy];
-}
-
-/**
- * Drop one taxonomy from what an entry's draft stages. Called after that
- * taxonomy's terms are written directly, so the older staged terms do not
- * replace them when the draft is published.
- */
-export async function dropDraftStagedTerms(
-	db: Kysely<Database>,
-	draftRevisionId: string | null,
-	taxonomy: string,
-): Promise<void> {
-	if (!draftRevisionId) return;
-	const revisionRepo = new RevisionRepository(db);
-	const revision = await revisionRepo.findById(draftRevisionId);
-	const terms = readStagedMetadata(revision?.data).terms;
-	if (!revision || !terms || !Object.hasOwn(terms, taxonomy)) return;
-	const rest = { ...terms };
-	delete rest[taxonomy];
-	if (Object.keys(rest).length > 0) {
-		await revisionRepo.mergeData(draftRevisionId, { [STAGED_TERMS_KEY]: rest });
-	} else {
-		await revisionRepo.deleteDataKeys(draftRevisionId, [STAGED_TERMS_KEY]);
-	}
 }
 
 /** The entry fields a staged part overrides when an entry is read with its draft. */
