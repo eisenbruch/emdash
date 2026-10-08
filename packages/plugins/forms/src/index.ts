@@ -44,7 +44,7 @@ import {
 	formCreateSchema,
 	formDeleteSchema,
 	formDuplicateSchema,
-	formsListToolSchema,
+	formsListSchema,
 	formUpdateSchema,
 	submissionDeleteSchema,
 	submissionGetSchema,
@@ -143,6 +143,8 @@ export function createPlugin(_options: FormsPluginOptions = {}): ResolvedPlugin 
 			// they state the default explicitly; REST access is unchanged.
 			"forms/list": {
 				permission: "plugins:manage",
+				// A caller that sends no body at all still gets the first page.
+				input: formsListSchema.prefault({}),
 				handler: formsListHandler,
 			},
 			"forms/create": {
@@ -206,9 +208,9 @@ export function createPlugin(_options: FormsPluginOptions = {}): ResolvedPlugin 
 			tools: {
 				forms_list: {
 					description:
-						"List the site's forms with their ids, slugs, names, fields and settings. Use a form's id with submissions_list.",
+						"List the site's forms with their ids, slugs, names, fields and settings, newest first, up to 100 at a time; page with the returned cursor. Use a form's id with submissions_list.",
 					route: "forms/list",
-					input: formsListToolSchema,
+					input: formsListSchema,
 					destructive: false,
 				},
 				submissions_list: {

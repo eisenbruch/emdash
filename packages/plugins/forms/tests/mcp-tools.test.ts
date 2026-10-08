@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
+import { formsListHandler } from "../src/handlers/forms.js";
 import { createPlugin } from "../src/index.js";
 
 describe("forms MCP tools", () => {
@@ -47,6 +48,28 @@ describe("forms MCP tools", () => {
 		]) {
 			expect(bound.has(route), route).toBe(false);
 		}
+	});
+
+	it("lets a caller page through the forms list, and keeps an empty body working", async () => {
+		const input = plugin.routes["forms/list"]?.input;
+		// The admin sends `{}` and some callers send nothing; both get the first 100.
+		expect(input?.parse(undefined)).toEqual({ limit: 100 });
+		expect(input?.parse({})).toEqual({ limit: 100 });
+		expect(input?.parse({ limit: 10, cursor: "abc" })).toEqual({ limit: 10, cursor: "abc" });
+		expect(input?.safeParse({ limit: 101 }).success).toBe(false);
+
+		const query = vi.fn().mockResolvedValue({ items: [], hasMore: false, cursor: undefined });
+		// eslint-disable-next-line typescript-eslint(no-unsafe-type-assertion) -- only storage.forms.query is read
+		const ctx = {
+			input: { limit: 10, cursor: "abc" },
+			storage: { forms: { query } },
+		} as unknown as Parameters<typeof formsListHandler>[0];
+		await formsListHandler(ctx);
+		expect(query).toHaveBeenCalledWith({
+			orderBy: { createdAt: "desc" },
+			limit: 10,
+			cursor: "abc",
+		});
 	});
 
 	it("marks no tool destructive, since none removes or overwrites visitor data", () => {
