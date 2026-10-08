@@ -1310,6 +1310,7 @@ export const ContentSettingsPanel = React.memo(function ContentSettingsPanel({
 								entryId={item.id}
 								onRestored={onRevisionRestored}
 								reserveHeaderEnd
+								liveRevisionId={item.liveRevisionId}
 							/>
 						</div>
 					</SortableContentSettingsSection>
