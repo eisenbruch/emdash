@@ -126,6 +126,23 @@ export class RevisionRepository {
 			.execute();
 	}
 
+	/** Drop top-level keys from a stored revision's data. */
+	async deleteDataKeys(id: string, keys: string[]): Promise<void> {
+		const row = await this.db
+			.selectFrom("revisions")
+			.select("data")
+			.where("id", "=", id)
+			.executeTakeFirst();
+		if (!row) return;
+		const data: Record<string, unknown> = JSON.parse(row.data);
+		for (const key of keys) delete data[key];
+		await this.db
+			.updateTable("revisions")
+			.set({ data: JSON.stringify(data) })
+			.where("id", "=", id)
+			.execute();
+	}
+
 	/**
 	 * Get all revisions for an entry (newest first)
 	 *

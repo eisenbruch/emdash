@@ -30,6 +30,15 @@ import {
 } from "./api/handlers/media-upload.js";
 import { resolveReferenceSelection } from "./api/handlers/relations.js";
 import {
+	hasStagedMetadata,
+	metadataToStage,
+	readStagedMetadata,
+	stagedMetadataKeys,
+	stagedMetadataView,
+	validateStagedMetadata,
+	type StagedMetadata,
+} from "./api/handlers/staged-metadata.js";
+import {
 	liveReferenceSelection,
 	mergeStagedReferenceBaselines,
 	mergeStagedReferences,
@@ -68,7 +77,10 @@ import type { CommentStatus } from "./database/repositories/comment.js";
 import { ContentRepository } from "./database/repositories/content.js";
 import { RevisionRepository } from "./database/repositories/revision.js";
 import { selectTaxonomyDefs } from "./database/repositories/taxonomy-def.js";
-import { ContentMutationConflictError } from "./database/repositories/types.js";
+import {
+	ContentMutationConflictError,
+	EmDashValidationError,
+} from "./database/repositories/types.js";
 import type {
 	ContentItem as ContentItemInternal,
 	ContentDateField,
@@ -3348,9 +3360,10 @@ export class EmDashRuntime {
 		id: string,
 		locale?: string,
 		referenceOptions?: { includeDrafts: boolean },
+		draftOptions: { includeStagedMetadata?: boolean } = {},
 	) {
 		const result = await handleContentGet(this.db, collection, id, locale, referenceOptions);
-		return this.hydrateDraftData(result);
+		return this.hydrateDraftData(result, draftOptions);
 	}
 
 	async handleContentGetIncludingTrashed(collection: string, id: string, locale?: string) {
@@ -3366,11 +3379,18 @@ export class EmDashRuntime {
 	 * (their pending draft), with the previously-published values still
 	 * accessible for compare-style flows.
 	 *
+	 * With `includeStagedMetadata`, SEO and byline credits the draft stages
+	 * replace the live ones on the item too, so an editor sees what is queued.
+	 *
 	 * No-op when no draft exists or the response is an error.
 	 */
 	private async hydrateDraftData<T>(
 		result: T,
-		options: { includeStagedSlug?: boolean; strict?: boolean } = {},
+		options: {
+			includeStagedSlug?: boolean;
+			includeStagedMetadata?: boolean;
+			strict?: boolean;
+		} = {},
 	): Promise<T> {
 		if (!result || typeof result !== "object") return result;
 		// eslint-disable-next-line typescript/no-unsafe-type-assertion -- shape probed below
@@ -3402,6 +3422,12 @@ export class EmDashRuntime {
 				if (!key.startsWith("_")) revisionData[key] = value;
 			}
 			const mergedData = { ...liveData, ...revisionData };
+			const stagedMetadata: StagedMetadata = options.includeStagedMetadata
+				? readStagedMetadata(revision.data)
+				: {};
+			const stagedView = hasStagedMetadata(stagedMetadata)
+				? await stagedMetadataView(this.db, item, stagedMetadata)
+				: {};
 			// Return a clone rather than mutating in place. The response
 			// object isn't retained by the runtime today, but a future
 			// request-cache layer would observe stale-after-mutation bugs;
@@ -3419,6 +3445,7 @@ export class EmDashRuntime {
 						...(options.includeStagedSlug && typeof revision.data._slug === "string"
 							? { slug: revision.data._slug }
 							: {}),
+						...stagedView,
 						data: mergedData,
 						liveData,
 					},
@@ -3697,10 +3724,16 @@ export class EmDashRuntime {
 
 		// Loaded once and threaded through normalization, the stale-key drop and the draft
 		// merge below: each of those needs the field list and the registry does not cache.
-		// A save carrying only a reference selection reaches the draft merge without any
-		// data, so it needs the collection loaded just the same.
+		// A save carrying only a reference selection, SEO, credits or terms can reach the
+		// draft merge without any data, so it needs the collection loaded just the same.
+		const requestedMetadata: StagedMetadata = {};
+		if (bodyWithoutRev.seo !== undefined) requestedMetadata.seo = bodyWithoutRev.seo;
+		if (bodyWithoutRev.bylines !== undefined) requestedMetadata.bylines = bodyWithoutRev.bylines;
+		if (bodyWithoutRev.taxonomies !== undefined) {
+			requestedMetadata.terms = bodyWithoutRev.taxonomies;
+		}
 		const collectionInfo =
-			bodyWithoutRev.data || bodyWithoutRev.references
+			bodyWithoutRev.data || bodyWithoutRev.references || hasStagedMetadata(requestedMetadata)
 				? await this.schemaRegistry.getCollectionWithFields(collection).catch(() => null)
 				: null;
 		const knownFieldSlugs = new Set((collectionInfo?.fields ?? []).map((f) => f.slug));
@@ -3808,12 +3841,57 @@ export class EmDashRuntime {
 			}
 		}
 
+		// SEO, credits and terms of an entry with a live version wait in its draft
+		// with the rest of its pending changes, so they go live when it is published.
+		let stagedMetadata: StagedMetadata = {};
+		if (
+			resolvedItem &&
+			hasStagedMetadata(requestedMetadata) &&
+			collectionInfo?.supports?.includes("revisions")
+		) {
+			const draftData =
+				!resolvedItem.liveRevisionId && resolvedItem.draftRevisionId
+					? (await new RevisionRepository(this.db).findById(resolvedItem.draftRevisionId))?.data
+					: undefined;
+			stagedMetadata = metadataToStage(
+				requestedMetadata,
+				Boolean(resolvedItem.liveRevisionId),
+				draftData,
+			);
+		}
+		if (hasStagedMetadata(stagedMetadata)) {
+			if (stagedMetadata.seo && !collectionInfo?.hasSeo) {
+				return {
+					success: false as const,
+					error: {
+						code: "VALIDATION_ERROR",
+						message: `Collection "${collection}" does not have SEO enabled. Remove the seo field or enable SEO on this collection.`,
+					},
+				};
+			}
+			try {
+				await validateStagedMetadata(
+					this.db,
+					resolvedItem?.locale ?? bodyWithoutRev.locale,
+					stagedMetadata,
+				);
+			} catch (error) {
+				if (error instanceof EmDashValidationError) {
+					return {
+						success: false as const,
+						error: { code: "VALIDATION_ERROR", message: error.message },
+					};
+				}
+				throw error;
+			}
+		}
+
 		// Draft-aware revision handling (if collection supports revisions)
 		// Content table columns = published data (never written by saves).
 		// Draft data lives only in the revisions table.
 		let usesDraftRevisions = false;
 		let draftStorageChanged = false;
-		if (processedData || bodyWithoutRev.references) {
+		if (processedData || bodyWithoutRev.references || hasStagedMetadata(stagedMetadata)) {
 			if (collectionInfo?.supports?.includes("revisions")) {
 				usesDraftRevisions = true;
 
@@ -3912,6 +3990,7 @@ export class EmDashRuntime {
 					if (bodyWithoutRev.slug !== undefined) {
 						mergedData._slug = bodyWithoutRev.slug;
 					}
+					Object.assign(mergedData, stagedMetadataKeys(baseData, stagedMetadata));
 					if (stagedReferences) {
 						mergedData[STAGED_REFERENCES_KEY] = mergeStagedReferences(baseData, stagedReferences);
 					}
@@ -3998,8 +4077,13 @@ export class EmDashRuntime {
 		}
 
 		// Public HTML comes from live columns / SEO / taxonomies, not draft revisions.
+		const stagedKeys = new Set<string>();
+		if (stagedMetadata.seo !== undefined) stagedKeys.add("seo");
+		if (stagedMetadata.bylines !== undefined) stagedKeys.add("bylines");
+		if (stagedMetadata.terms !== undefined) stagedKeys.add("taxonomies");
 		const liveMetaTouched = Object.entries(bodyWithoutRev).some(
-			([key, value]) => value !== undefined && !DRAFT_ONLY_UPDATE_KEYS.has(key),
+			([key, value]) =>
+				value !== undefined && !DRAFT_ONLY_UPDATE_KEYS.has(key) && !stagedKeys.has(key),
 		);
 
 		// Update the content table:
@@ -4015,7 +4099,9 @@ export class EmDashRuntime {
 						slug: usesDraftRevisions ? undefined : bodyWithoutRev.slug,
 						references: usesDraftRevisions ? undefined : bodyWithoutRev.references,
 						authorId: bodyWithoutRev.authorId,
-						bylines: bodyWithoutRev.bylines,
+						seo: stagedKeys.has("seo") ? undefined : bodyWithoutRev.seo,
+						bylines: stagedKeys.has("bylines") ? undefined : bodyWithoutRev.bylines,
+						taxonomies: stagedKeys.has("taxonomies") ? undefined : bodyWithoutRev.taxonomies,
 					});
 
 		const liveContentChanged = usesDraftRevisions
@@ -4031,7 +4117,7 @@ export class EmDashRuntime {
 		// the same effective data the response surfaces — for revision-
 		// supporting collections, that's the just-saved draft, not the live
 		// columns.
-		const hydrated = await this.hydrateDraftData(result);
+		const hydrated = await this.hydrateDraftData(result, { includeStagedMetadata: true });
 		if (hydrated.success && hydrated.data) {
 			const contentIdsToRefresh = [resolvedId];
 			if (!usesDraftRevisions && processedData) {
@@ -4457,6 +4543,7 @@ export class EmDashRuntime {
 			try {
 				current = await this.hydrateDraftData(current, {
 					includeStagedSlug: true,
+					includeStagedMetadata: true,
 					strict: true,
 				});
 			} catch (error) {
@@ -5189,7 +5276,7 @@ export class EmDashRuntime {
 			// columns and the next `content_get` would surface different
 			// values (the bug that motivated this rewrite).
 			const refetched = await handleContentGet(this.db, revision.collection, revision.entryId);
-			const hydrated = await this.hydrateDraftData(refetched);
+			const hydrated = await this.hydrateDraftData(refetched, { includeStagedMetadata: true });
 			if (hydrated.success) {
 				await this.refreshContentUsageAfterSuccessfulWrite(revision.collection, [revision.entryId]);
 			}

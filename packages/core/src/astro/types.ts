@@ -322,6 +322,7 @@ export interface EmDashHandlers {
 		id: string,
 		locale?: string,
 		referenceOptions?: { includeDrafts: boolean },
+		draftOptions?: { includeStagedMetadata?: boolean },
 	) => Promise<
 		HandlerResponse<{
 			item: {

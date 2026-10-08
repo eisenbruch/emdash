@@ -5,10 +5,12 @@
  * POST /_emdash/api/content/:collection/:id/terms/:taxonomy - Set terms for an entry
  */
 
+import { hasPermission } from "@emdash-cms/auth";
 import type { APIRoute } from "astro";
 
 import { requirePerm, requireOwnerPerm } from "#api/authorize.js";
 import { apiError, apiSuccess, handleError, requireDb } from "#api/error.js";
+import { dropDraftStagedTerms, readDraftStagedTerms } from "#api/handlers/staged-metadata.js";
 import { parseBody, isParseError } from "#api/parse.js";
 import { contentTermsBody } from "#api/schemas.js";
 import { taxonomyTag } from "#cache/chrome-tags.js";
@@ -84,6 +86,27 @@ export const GET: APIRoute = async ({ params, locals }) => {
 		const defaultLocale = getI18nConfig()?.defaultLocale ?? "en";
 
 		const repo = new TaxonomyRepository(emdash.db);
+
+		// Terms a draft stages are what the entry will have once it is published,
+		// which is what an editor working on the draft needs to see.
+		const stagedSlugs = hasPermission(user, "content:read_drafts")
+			? await readDraftStagedTerms(emdash.db, entry.draftRevisionId, taxonomy)
+			: undefined;
+		if (stagedSlugs) {
+			const staged: TaxonomyAssignmentResolution[] = [];
+			for (const slug of stagedSlugs) {
+				const term = await repo.findBySlug(taxonomy, slug, locale);
+				if (!term) continue;
+				staged.push({
+					translationGroup: term.translationGroup ?? term.id,
+					term,
+					availableLocales: [term.locale],
+					translations: [],
+				});
+			}
+			return apiSuccess(assignmentResponse(staged, locale));
+		}
+
 		const assignments = await repo.getTermAssignmentsForEntry(
 			collection,
 			entry.id,
@@ -178,6 +201,9 @@ export const POST: APIRoute = async ({ params, request, locals, cache }) => {
 
 		// Set the terms (replaces existing) using the canonical ID
 		await repo.setTermsForEntry(collection, canonicalId, taxonomy, termIds);
+		const draftRevisionId =
+			typeof existingItem?.draftRevisionId === "string" ? existingItem.draftRevisionId : null;
+		await dropDraftStagedTerms(emdash.db, draftRevisionId, taxonomy);
 
 		// Term assignments changed — invalidate the hasAnyTermAssignments cache
 		// so hydration on subsequent reads issues a fresh query.
