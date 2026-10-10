@@ -36,6 +36,8 @@ import {
 import { VERSION } from "../../version.js";
 import { local } from "../storage/adapters.js";
 import { readAdminLocaleManifest, resolveAdminLocales } from "./admin-locales.js";
+import { loadDevEnv } from "./dev-env.js";
+import { startDevSchedulerBridge } from "./dev-scheduler-bridge.js";
 import { createDebouncedTypegenRefresh, listenForDevTypegenRefresh } from "./dev-typegen.js";
 import { notoSans } from "./font-provider.js";
 import {
@@ -570,6 +572,7 @@ export function emdash(config: EmDashConfig = {}): AstroIntegration {
 	// Captured in astro:config:setup so the astro:server:setup hook can tell
 	// whether we're running `astro dev` (where the dev-bypass shortcut applies).
 	let astroCommand: "dev" | "build" | "preview" | "sync" | undefined;
+	let usesCloudflareAdapter = false;
 	let normalizedI18n: ReturnType<typeof normalizeAstroI18n> = null;
 	const migrationMetadata = createMigrationIntegrationMetadata(resolvedConfig.database);
 
@@ -585,10 +588,24 @@ export function emdash(config: EmDashConfig = {}): AstroIntegration {
 				command,
 			}) => {
 				astroCommand = command;
+				usesCloudflareAdapter = astroConfig.adapter?.name === "@astrojs/cloudflare";
 				normalizeRegistryConfig(registry, {
 					allowLocalhost: command === "dev" || command === "sync",
 				});
 				printBanner(logger);
+				if (command === "dev") {
+					// In Node `astro dev`, Vite loads `.env` into `import.meta.env`
+					// but not `process.env`. The plugin-secret encryption key
+					// intentionally reads only `process.env`, so a freshly
+					// scaffolded site can't save secret plugin settings until the
+					// key is copied over. Load only `EMDASH_ENCRYPTION_KEY` here,
+					// honoring any value already present in the shell.
+					try {
+						loadDevEnv(astroConfig.root);
+					} catch (error: unknown) {
+						logger.warn(`Failed to load EMDASH_ENCRYPTION_KEY from .env: ${String(error)}`);
+					}
+				}
 				// Capture the host's Astro version so the runtime can expose it
 				// to the admin and the registry install gate for `env:astro`
 				// constraint checks.
@@ -714,7 +731,10 @@ export function emdash(config: EmDashConfig = {}): AstroIntegration {
 					astroInjectRoute({ ...route, prerender: false });
 
 				// Inject all core routes
-				injectCoreRoutes(injectRoute, { srcDir: astroConfig.srcDir });
+				injectCoreRoutes(injectRoute, {
+					srcDir: astroConfig.srcDir,
+					cloudflareDevScheduler: command === "dev" && usesCloudflareAdapter,
+				});
 
 				// Inject routes from pluggable auth providers (authProviders config)
 				if (resolvedConfig.authProviders?.length) {
@@ -770,6 +790,10 @@ export function emdash(config: EmDashConfig = {}): AstroIntegration {
 				await writeMigrationManifest(fileURLToPath(finalConfig.root), manifest);
 			},
 			"astro:server:setup": ({ server, logger }) => {
+				if (astroCommand === "dev" && usesCloudflareAdapter) {
+					startDevSchedulerBridge(server, logger);
+				}
+
 				// Print route info with absolute, clickable URLs once the server
 				// is listening. Only in `astro dev` -- the dev-bypass shortcut is
 				// dev-only and the port is unknown until now.

@@ -896,6 +896,106 @@ describe("Portable Text ↔ ProseMirror conversion", () => {
 		expect(onChange).not.toHaveBeenCalled();
 	});
 
+	describe("opening stored content that ends in a block", () => {
+		type StoredValue = Parameters<typeof PortableTextEditor>[0]["value"];
+		const code = { _type: "code", _key: "code-1", language: "js", code: "const a = 1;" };
+		const span = (extra: Record<string, unknown> = {}) => ({
+			_type: "span",
+			_key: "s1",
+			text: "Intro",
+			...extra,
+		});
+		// The shape markdownToPortableText writes.
+		const withEmptyArrays = [
+			{
+				_type: "block",
+				_key: "p1",
+				style: "normal",
+				markDefs: [],
+				children: [span({ marks: [] })],
+			},
+			code,
+		];
+
+		/** Opens the content and waits for TrailingNode to append its paragraph. */
+		async function open(value: unknown[]) {
+			const onChange = vi.fn();
+			const { editor, pm } = await renderAndGetEditor({ value: value as StoredValue, onChange });
+			await vi.waitFor(() => expect(pm.lastElementChild?.matches("p.is-empty")).toBe(true));
+			return { editor, onChange };
+		}
+
+		it.each([
+			["empty markDefs and marks", withEmptyArrays],
+			["a block with no style", [{ _type: "block", _key: "p1", children: [span()] }, code]],
+			[
+				"a list item with no level",
+				[
+					{ _type: "block", _key: "l1", style: "normal", listItem: "bullet", children: [span()] },
+					code,
+				],
+			],
+			[
+				"an unused markDefs entry",
+				[
+					{
+						_type: "block",
+						_key: "p1",
+						style: "normal",
+						markDefs: [{ _type: "link", _key: "u1", href: "https://example.com" }],
+						children: [span()],
+					},
+					code,
+				],
+			],
+			[
+				"a code block field the editor doesn't map",
+				[
+					{ _type: "block", _key: "p1", style: "normal", children: [span()] },
+					{ ...code, filename: "a.js" },
+				],
+			],
+			["a block with no _key", [{ _type: "block", style: "normal", children: [span()] }, code]],
+			[
+				"a span with no _key",
+				[
+					{
+						_type: "block",
+						_key: "p1",
+						style: "normal",
+						children: [{ _type: "span", text: "Intro" }],
+					},
+					code,
+				],
+			],
+		])("does not report a change when the content has %s", async (_shape, value) => {
+			const { onChange } = await open(value);
+
+			expect(onChange).not.toHaveBeenCalled();
+		});
+
+		it("reports typing", async () => {
+			const { editor, onChange } = await open(withEmptyArrays);
+			onChange.mockClear();
+
+			editor.chain().focus().setTextSelection(6).insertContent(" text").run();
+
+			expect(onChange).toHaveBeenCalledTimes(1);
+			expect(JSON.stringify(onChange.mock.calls[0]![0])).toContain(" text");
+		});
+
+		it("reports undoing an edit back to the opened content", async () => {
+			const { editor, onChange } = await open(withEmptyArrays);
+			onChange.mockClear();
+
+			editor.chain().focus().setTextSelection(6).insertContent(" text").run();
+			editor.commands.undo();
+
+			expect(onChange).toHaveBeenCalledTimes(2);
+			expect(JSON.stringify(onChange.mock.calls[1]![0])).not.toContain(" text");
+		});
+	});
+
 	it("renders an h1 heading", async () => {
 		await render(<PortableTextEditor value={[textBlock("Title", { style: "h1" })]} />);
 		const pm = await waitForEditor();
@@ -1452,10 +1552,12 @@ describe("Editor component behaviour", () => {
 		const scroller = document.querySelector<HTMLElement>('[data-testid="scroller"]')!;
 		const toolbar = document.querySelector<HTMLElement>('[data-emdash-editor-toolbar="document"]')!;
 		const lineStart = editor.state.doc.child(0).nodeSize * 40 + 1;
-		editor.chain().focus().setTextSelection(lineStart).run();
+		await focusEditor(editor.view.dom);
+		editor.commands.setTextSelection(lineStart);
+		scroller.scrollTop = 200;
+		await vi.waitFor(() => expect(toolbar.hasAttribute("data-stuck")).toBe(true));
 		scroller.scrollTop +=
 			editor.view.coordsAtPos(lineStart).top - toolbar.getBoundingClientRect().bottom - 30;
-		await vi.waitFor(() => expect(toolbar.hasAttribute("data-stuck")).toBe(true));
 
 		await userEvent.keyboard("{ArrowUp}");
 
