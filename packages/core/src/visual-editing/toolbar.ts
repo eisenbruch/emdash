@@ -1077,9 +1077,8 @@ export function renderToolbar(config: ToolbarConfig): string {
     });
   }
 
-  // A window name may not contain whitespace, and ids are not constrained to a safe alphabet.
   function adminWindowName(collection, id) {
-    return "emdash-admin-" + (collection + "-" + id).replace(/[^A-Za-z0-9_-]/g, "_");
+    return "emdash-admin-" + encodeURIComponent(collection) + "/" + encodeURIComponent(id);
   }
 
   // Fallback: open admin

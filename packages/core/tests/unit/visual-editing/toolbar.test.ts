@@ -241,25 +241,14 @@ describe("renderToolbar", () => {
 			expect(adminWindowName("posts", "post-1")).toBe(adminWindowName("posts", "post-1"));
 		});
 
-		it("replaces characters a browsing context name cannot carry", () => {
+		it("encodes the collection and id, so no two entries share a name", () => {
 			const adminWindowName = adminWindowNameIn(toolbarScript(actionToolbar()));
-			// A window name may not contain whitespace, and neither collection names nor
-			// ids are constrained to a safe alphabet by the time they reach here.
 			expect(adminWindowName("my posts", "id with spaces")).toBe(
-				"emdash-admin-my_posts-id_with_spaces",
+				"emdash-admin-my%20posts/id%20with%20spaces",
 			);
-			expect(adminWindowName("posts", 'a"b<c>')).toMatch(/^[A-Za-z0-9_-]+$/);
-		});
-
-		it("never falls back to one shared window name", () => {
-			const script = toolbarScript(actionToolbar());
-			expect(script).not.toMatch(/target\s*=\s*"emdash-admin"/);
-			expect(script).not.toContain('window.open(url, "emdash-admin")');
-		});
-
-		it("renders the admin link without a shared target", () => {
-			const html = renderToolbar({ editMode: true, isPreview: false });
-			expect(html).not.toMatch(/target\s*=\s*"emdash-admin"/);
+			expect(adminWindowName("posts", "a.b")).not.toBe(adminWindowName("posts", "a b"));
+			expect(adminWindowName("posts-a", "b")).not.toBe(adminWindowName("posts", "a-b"));
+			expect(adminWindowName("a/b", "c")).not.toBe(adminWindowName("a", "b/c"));
 		});
 	});
 

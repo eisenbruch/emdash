@@ -219,6 +219,18 @@ describe("toolbar language", () => {
 	});
 });
 
+describe("toolbar admin link", () => {
+	it("opens each entry in its own admin window", () => {
+		stubApi();
+		const entry = JSON.stringify({ collection: "posts", id: "post-1", status: "published" });
+		mountEditablePage(`<article data-emdash-ref='${entry}'></article>`);
+
+		const adminLink = document.getElementById("emdash-tb-admin") as HTMLAnchorElement;
+		expect(adminLink.getAttribute("href")).toBe("/_emdash/admin/content/posts/post-1");
+		expect(adminLink.target).toBe("emdash-admin-posts/post-1");
+	});
+});
+
 describe("toolbar inline editing", () => {
 	it("edits text in place while the toolbar pill is hidden", async () => {
 		const fetchMock = stubApi();
@@ -255,7 +267,7 @@ describe("toolbar inline editing", () => {
 			expect(openMock).toHaveBeenCalledWith(
 				"/_emdash/admin/content/posts/post-1?field=excerpt",
 				// One window per entry, so this entry's admin tab is reused and no other entry's is replaced.
-				"emdash-admin-posts-post-1",
+				"emdash-admin-posts/post-1",
 			),
 		);
 		expect(excerpt.hasAttribute("data-emdash-editing")).toBe(false);
