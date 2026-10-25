@@ -79,6 +79,39 @@ describe("redirects token scope", () => {
 		expect(next).toHaveBeenCalledOnce();
 	});
 
+	it("does not let a content-read token read the 404 log", async () => {
+		for (const path of ["/_emdash/api/redirects/404s", "/_emdash/api/redirects/404s/summary"]) {
+			const { response, next } = await requestWithScopes(["content:read"], "GET", path);
+			expect(response.status).toBe(403);
+			expect(next).not.toHaveBeenCalled();
+		}
+	});
+
+	it("lets a settings-read token read the 404 log", async () => {
+		for (const path of ["/_emdash/api/redirects/404s", "/_emdash/api/redirects/404s/summary"]) {
+			const { response, next } = await requestWithScopes(["settings:read"], "GET", path);
+			expect(response.status).toBe(200);
+			expect(next).toHaveBeenCalledOnce();
+		}
+	});
+
+	it("lets only a settings-manage token clear or prune the 404 log", async () => {
+		for (const method of ["DELETE", "POST"]) {
+			const allowed = await requestWithScopes(
+				["settings:manage"],
+				method,
+				"/_emdash/api/redirects/404s",
+			);
+			expect(allowed.response.status).toBe(200);
+			const refused = await requestWithScopes(
+				["content:read", "settings:read"],
+				method,
+				"/_emdash/api/redirects/404s",
+			);
+			expect(refused.response.status).toBe(403);
+		}
+	});
+
 	it("does not let a read-only token write a redirect", async () => {
 		const { response, next } = await requestWithScopes(["content:read", "settings:read"], "POST");
 		expect(response.status).toBe(403);
